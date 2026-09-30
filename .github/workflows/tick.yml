@@ -1,0 +1,48 @@
+name: Paper trader tick
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # every 5 min (GitHub may run it a few minutes late; that's fine)
+  workflow_dispatch:        # lets you press "Run workflow" by hand
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load saved state from the data branch
+        run: |
+          node -v
+          mkdir -p out
+          if git fetch -q --depth=1 origin data; then
+            git show FETCH_HEAD:state.json > out/state.json 2>/dev/null || rm -f out/state.json
+            git show FETCH_HEAD:backtest.json > out/backtest.json 2>/dev/null || rm -f out/backtest.json
+          fi
+
+      - name: Grade finished windows + predict the next one
+        run: node run.mjs out/state.json
+
+      - name: Refresh backtest if model.js changed (or daily)
+        continue-on-error: true
+        run: node maybe-backtest.mjs out/backtest.json
+
+      - name: Save to the data branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd out
+          git init -q -b data
+          git config user.name "paper-trader-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "tick $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push -qf "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" data
