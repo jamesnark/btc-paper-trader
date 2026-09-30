@@ -109,7 +109,7 @@ const pct = v => (v * 100).toFixed(1) + '%';
 const cents = v => v == null ? 'n/a' : Math.round(v * 100) + '¢';
 const tm = t => new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 const ago = t => { const m = Math.round((Date.now() / 1000 - t) / 60); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${(m / 60).toFixed(1)} h ago`; };
-const margin = (p, n) => n ? 1.96 * Math.sqrt(Math.max(p * (1 - p), 0.0001) / n) : 0;
+const margin = (p, n) => n ? 1.96 * Math.sqrt(0.25 / n) : 0; // conservative: honest even with tiny samples
 const cls = v => v > 0 ? 'up' : v < 0 ? 'down' : '';
 
 async function load() {
