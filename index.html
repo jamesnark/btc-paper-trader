@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BTC Paper Trader</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b1f24; --mute:#667085; --line:#e4e7ec; --up:#1a7f37; --down:#c62828; --accent:#1565c0; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width: 1060px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 0 0 10px; }
+  .sub { color: var(--mute); margin: 0 0 16px; }
+  .tabs { display:flex; gap:6px; margin: 0 0 14px; }
+  .tabs button { border:1px solid var(--line); background:#fff; padding:7px 14px; border-radius:999px; cursor:pointer; font:inherit; }
+  .tabs button.on { background: var(--ink); color:#fff; border-color: var(--ink); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap:12px; margin-bottom:14px; }
+  .kpi .v { font-size: 26px; font-weight: 700; }
+  .kpi .l { color: var(--mute); font-size: 13px; }
+  .kpi .n { color: var(--mute); font-size: 13px; margin-top: 4px; }
+  .next { border-left: 4px solid var(--accent); }
+  table { width:100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align:left; padding: 7px 8px; border-bottom:1px solid var(--line); white-space: nowrap; }
+  th { color: var(--mute); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .scroll { overflow-x:auto; }
+  .up { color: var(--up); } .down { color: var(--down); } .mute { color: var(--mute); }
+  .pill { display:inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight:600; }
+  .win { background:#e6f4ea; color: var(--up); } .loss { background:#fdecea; color: var(--down); } .pend { background:#eef2f7; color: var(--mute); }
+  canvas { width:100%; height: 300px; display:block; }
+  .legend { display:flex; flex-wrap:wrap; gap: 14px; margin-top: 8px; font-size: 13px; }
+  .legend i { display:inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  details summary { cursor: pointer; font-weight: 600; }
+  .explain p, .explain li { color: #344054; }
+  .warn { background:#fff8e1; border-color:#f3d37a; }
+  .err { color: var(--down); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>BTC Paper Trader</h1>
+  <p class="sub">Predicts every 15-minute Polymarket "Bitcoin Up or Down" window, makes <b>pretend</b> bets at real prices with real fees, then grades itself. No real money, ever.</p>
+
+  <div class="tabs">
+    <button data-mode="live" class="on">Live</button>
+    <button data-mode="backtest">Backtest (past 7 days)</button>
+  </div>
+
+  <div id="status" class="card mute">Loading...</div>
+  <div id="next"></div>
+  <div class="grid" id="kpis"></div>
+
+  <div class="card">
+    <h2>Same predictions, four ways to size bets</h2>
+    <p class="mute" style="margin-top:0">Each line starts with $1,000 and places the exact same bets. The only difference is how much of the bankroll goes on each one.</p>
+    <canvas id="chart"></canvas>
+    <div class="legend" id="legend"></div>
+    <div class="scroll" style="margin-top:12px"><table id="banks"></table></div>
+  </div>
+
+  <div class="card">
+    <h2>Your model vs. no-skill baselines ($10 flat bets, after fees)</h2>
+    <div class="scroll"><table id="baselines"></table></div>
+    <p class="mute" style="margin-bottom:0;font-size:13px">If your model can't beat "Always pick Up" or "Follow the market favorite," it isn't predicting anything useful yet.</p>
+  </div>
+
+  <div class="card">
+    <h2>Recent windows</h2>
+    <div class="scroll"><table id="rounds"></table></div>
+  </div>
+
+  <div class="card explain">
+    <details>
+      <summary>How to read this</summary>
+      <ul>
+        <li><b>Calls right</b>: how often the model's direction (Up if it says over 50%) matched the result, across every window. 50% is a coin flip.</li>
+        <li><b>Bets</b>: the model only bets when its probability beats the price plus Polymarket's fee (<code>0.07 × price × (1 − price)</code> per share) by at least 1¢. At 51¢ you need to win about 52.8% just to break even.</li>
+        <li><b>± margin</b>: the 95% "could be luck" range. If 50% is inside it, you can't tell the model from a coin flip yet. It shrinks as more windows come in.</li>
+        <li><b>Kelly</b>: the math-optimal bet size for the edge the model <i>claims</i>. Half Kelly is what most pros use because models are usually overconfident. Betting more than 2x Kelly (like 75% every bet) loses money long-term even with a real edge.</li>
+        <li><b>Live vs backtest</b>: live uses the real order book at the moment of the decision. The backtest replays past windows using recorded prices plus half a cent, and decides 10 minutes before each window starts. Trust live more.</li>
+        <li>To try a new idea, edit <code>model.js</code> in the repo. The next run picks it up automatically.</li>
+      </ul>
+    </details>
+  </div>
+  <p class="mute" style="font-size:12px">Data: Polymarket public API (prices, results), Coinbase (BTC candles). Educational simulator only.</p>
+</main>
+
+<script>
+const REPO = 'jamesnark/btc-paper-trader';
+const SOURCES = {
+  live: () => `https://raw.githubusercontent.com/${REPO}/data/state.json?t=${Date.now()}`,
+  backtest: () => `https://raw.githubusercontent.com/${REPO}/data/backtest.json?t=${Date.now()}`,
+};
+const SIZERS = {
+  fixed2:    { label: 'Fixed 2%',      color: '#2e7d32' },
+  halfKelly: { label: 'Half Kelly',    color: '#1565c0' },
+  kelly:     { label: 'Full Kelly',    color: '#8e24aa' },
+  yolo75:    { label: '75% every bet', color: '#d84315' },
+};
+const CALLERS = { mine: 'Your model', alwaysUp: 'Always pick Up', coin: 'Coin flip', favorite: 'Follow the market favorite' };
+let mode = 'live', lastState = null;
+
+const $ = id => document.getElementById(id);
+const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const signed = v => (v >= 0 ? '+' : '') + money(v);
+const pct = v => (v * 100).toFixed(1) + '%';
+const cents = v => v == null ? 'n/a' : Math.round(v * 100) + '¢';
+const tm = t => new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+const ago = t => { const m = Math.round((Date.now() / 1000 - t) / 60); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${(m / 60).toFixed(1)} h ago`; };
+const margin = (p, n) => n ? 1.96 * Math.sqrt(Math.max(p * (1 - p), 0.0001) / n) : 0;
+const cls = v => v > 0 ? 'up' : v < 0 ? 'down' : '';
+
+async function load() {
+  try {
+    const res = await fetch(SOURCES[mode](), { cache: 'no-store' });
+    if (!res.ok) throw new Error(res.status === 404 ? 'No data yet. The first run hasn\'t finished.' : 'HTTP ' + res.status);
+    lastState = await res.json();
+    render(lastState);
+  } catch (e) {
+    $('status').innerHTML = `<span class="err">Couldn't load ${mode} data: ${e.message}</span>`;
+  }
+}
+
+function render(s) {
+  const all = s.rounds;
+  const done = all.filter(r => r.outcome && r.outcome !== 'void');
+  const pending = all.filter(r => !r.outcome);
+  const bets = done.filter(r => r.bet);
+  const right = done.filter(r => r.call === r.outcome).length;
+  const acc = done.length ? right / done.length : 0;
+  const betWins = bets.filter(r => r.bet.side === r.outcome).length;
+  const betAcc = bets.length ? betWins / bets.length : 0;
+  const breakeven = bets.length ? bets.reduce((a, r) => a + r.bet.cost, 0) / bets.length : null;
+  const flatMine = done.filter(r => r.flat?.mine).reduce((a, r) => a + r.flat.mine.pnl, 0);
+
+  const span = s.mode === 'backtest'
+    ? `Backtest of ${done.length} windows from ${tm(done[0]?.start ?? s.createdAt)} to ${tm(done.at(-1)?.end ?? s.updatedAt)}. Generated ${ago(s.updatedAt)}.`
+    : `Running since ${tm(s.createdAt)}. Last update ${ago(s.updatedAt)} (${s.runs} runs). ${done.length} windows graded, ${pending.length} waiting.`;
+  const errs = (s.errors || []).filter(e => Date.now() / 1000 - e.t < 3600);
+  $('status').innerHTML = `<b>Model:</b> ${s.model}<br><span class="mute">${span}</span>` +
+    (errs.length ? `<div class="err">Recent issue: ${errs[0].m}</div>` : '');
+
+  // Next / pending prediction (live)
+  const nx = s.mode === 'live' ? pending.at(-1) : null;
+  $('next').innerHTML = nx ? `<div class="card next">
+      <h2>${nx.start > Date.now() / 1000 ? 'Next window' : 'In progress'}: ${nx.title.replace('Bitcoin Up or Down - ', '')}</h2>
+      Model says <b>${pct(nx.pUp)} Up</b>. Market price for Up: <b>${cents(nx.upAsk)}</b>, Down: <b>${cents(nx.downAsk)}</b>.<br>
+      ${nx.bet ? `Pretend bet: <b class="${nx.bet.side === 'Up' ? 'up' : 'down'}">${nx.bet.side}</b> at ${cents(nx.bet.ask)} (edge ${(nx.bet.edge * 100).toFixed(1)}¢ per share after fees, Kelly says ${pct(nx.bet.kelly)} of bankroll).`
+               : `<span class="mute">No bet: ${nx.noBetReason}.</span>`}
+    </div>` : '';
+
+  const m1 = margin(acc, done.length), m2 = margin(betAcc, bets.length);
+  $('kpis').innerHTML = `
+    <div class="card kpi"><div class="l">Calls right</div><div class="v">${done.length ? pct(acc) : 'n/a'}</div>
+      <div class="n">${right} of ${done.length} windows, ±${pct(m1)}. ${done.length ? (acc - m1 > 0.5 ? 'Better than a coin flip.' : acc + m1 < 0.5 ? 'Worse than a coin flip.' : 'Can\'t tell from a coin flip yet.') : ''}</div></div>
+    <div class="card kpi"><div class="l">Bets won</div><div class="v">${bets.length ? pct(betAcc) : 'n/a'}</div>
+      <div class="n">${betWins} of ${bets.length} bets (±${pct(m2)}). Needed ~${breakeven ? pct(breakeven) : 'n/a'} to break even.</div></div>
+    <div class="card kpi"><div class="l">$10 flat bets, your model</div><div class="v ${cls(flatMine)}">${signed(flatMine)}</div>
+      <div class="n">After fees, over ${bets.length} bets. Bets taken on ${done.length ? pct(bets.length / done.length) : '0%'} of windows.</div></div>`;
+
+  // Baselines
+  let rows = `<tr><th>Strategy</th><th class="num">Bets</th><th class="num">Won</th><th class="num">± luck</th><th class="num">Profit/loss</th></tr>`;
+  for (const [k, label] of Object.entries(CALLERS)) {
+    const F = done.filter(r => r.flat?.[k]);
+    const w = F.filter(r => r.flat[k].side === r.outcome).length;
+    const p = F.length ? w / F.length : 0;
+    const pnl = F.reduce((a, r) => a + r.flat[k].pnl, 0);
+    rows += `<tr><td>${k === 'mine' ? '<b>' + label + '</b>' : label}</td><td class="num">${F.length}</td><td class="num">${F.length ? pct(p) : 'n/a'}</td><td class="num">±${pct(margin(p, F.length))}</td><td class="num ${cls(pnl)}">${signed(pnl)}</td></tr>`;
+  }
+  $('baselines').innerHTML = rows;
+
+  // Bankrolls
+  const eq = s.equity || [];
+  let b = `<tr><th>Sizing rule</th><th class="num">Now</th><th class="num">Change</th><th class="num">Peak</th><th class="num">Worst drop from peak</th><th>Status</th></tr>`;
+  for (const [k, z] of Object.entries(SIZERS)) {
+    let peak = -Infinity, dd = 0;
+    for (const p of eq) { peak = Math.max(peak, p[k]); dd = Math.max(dd, peak > 0 ? (peak - p[k]) / peak : 0); }
+    const now = eq.at(-1)?.[k] ?? 1000;
+    const start = eq[0]?.[k] ?? 1000;
+    const broke = now < 3;
+    b += `<tr><td><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${z.color};margin-right:6px"></i>${z.label}</td>
+      <td class="num">${money(now)}</td><td class="num ${cls(now - start)}">${pct((now - start) / start)}</td>
+      <td class="num">${money(peak)}</td><td class="num down">-${pct(dd)}</td>
+      <td>${broke ? '<span class="pill loss">Broke</span>' : '<span class="pill pend">Still playing</span>'}</td></tr>`;
+  }
+  $('banks').innerHTML = b;
+  $('legend').innerHTML = Object.values(SIZERS).map(z => `<span><i style="background:${z.color}"></i>${z.label}</span>`).join('');
+  drawChart(eq);
+
+  // Recent rounds
+  let r = `<tr><th>Window</th><th class="num">Model: Up?</th><th class="num">Up price</th><th>Call</th><th>Bet</th><th>Result</th><th class="num">$10 bet</th></tr>`;
+  for (const x of [...all].reverse().slice(0, 60)) {
+    const res = !x.outcome ? '<span class="pill pend">waiting</span>'
+      : x.outcome === 'void' ? '<span class="pill pend">void</span>'
+      : `<span class="${x.outcome === 'Up' ? 'up' : 'down'}">${x.outcome}</span>`;
+    const betCell = x.bet ? `<b class="${x.bet.side === 'Up' ? 'up' : 'down'}">${x.bet.side}</b> @ ${cents(x.bet.ask)}` : '<span class="mute">skip</span>';
+    const f = x.flat?.mine;
+    const out = !x.bet ? '' : !x.outcome ? '<span class="pill pend">open</span>'
+      : `<span class="pill ${f.pnl > 0 ? 'win' : 'loss'}">${signed(f.pnl)}</span>`;
+    r += `<tr><td>${tm(x.start)}</td><td class="num">${pct(x.pUp)}</td><td class="num">${cents(x.upAsk)}</td>
+      <td class="${x.call === 'Up' ? 'up' : 'down'}">${x.call}</td><td>${betCell}</td><td>${res}</td><td class="num">${out}</td></tr>`;
+  }
+  $('rounds').innerHTML = r;
+}
+
+function drawChart(eq) {
+  const c = $('chart'), dpr = window.devicePixelRatio || 1;
+  const W = c.clientWidth, H = c.clientHeight;
+  c.width = W * dpr; c.height = H * dpr;
+  const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  if (eq.length < 2) { g.fillStyle = '#667085'; g.font = '14px sans-serif'; g.fillText('Not enough data yet. Check back after a few windows.', 12, 30); return; }
+  const L = 64, R = 12, T = 10, B = 26;
+  const t0 = eq[0].t, t1 = eq.at(-1).t || t0 + 1;
+  const ymax = Math.max(1000, ...eq.flatMap(p => Object.keys(SIZERS).map(k => p[k]))) * 1.05;
+  const X = t => L + (W - L - R) * ((t - t0) / Math.max(1, t1 - t0));
+  const Y = v => T + (H - T - B) * (1 - v / ymax);
+  g.font = '12px sans-serif'; g.fillStyle = '#667085'; g.strokeStyle = '#e4e7ec'; g.lineWidth = 1;
+  const step = ymax > 4000 ? 1000 : ymax > 2000 ? 500 : 250;
+  for (let v = 0; v <= ymax; v += step) {
+    g.beginPath(); g.moveTo(L, Y(v)); g.lineTo(W - R, Y(v)); g.stroke();
+    g.fillText('$' + v.toLocaleString(), 6, Y(v) + 4);
+  }
+  g.setLineDash([4, 4]); g.strokeStyle = '#98a2b3';
+  g.beginPath(); g.moveTo(L, Y(1000)); g.lineTo(W - R, Y(1000)); g.stroke(); g.setLineDash([]);
+  g.fillStyle = '#667085';
+  g.fillText(tm(t0), L, H - 6);
+  const endLabel = tm(t1); g.fillText(endLabel, W - R - g.measureText(endLabel).width, H - 6);
+  for (const [k, z] of Object.entries(SIZERS)) {
+    g.strokeStyle = z.color; g.lineWidth = 2; g.beginPath();
+    eq.forEach((p, i) => i ? g.lineTo(X(p.t), Y(p[k])) : g.moveTo(X(p.t), Y(p[k])));
+    g.stroke();
+  }
+}
+
+document.querySelectorAll('.tabs button').forEach(btn => btn.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b === btn));
+  mode = btn.dataset.mode; $('status').textContent = 'Loading...'; $('next').innerHTML = ''; load();
+});
+window.addEventListener('resize', () => lastState && drawChart(lastState.equity || []));
+if (location.hash === '#backtest') document.querySelector('[data-mode=backtest]').click(); else load();
+setInterval(() => { if (mode === 'live') load(); }, 60000);
+</script>
+</body>
+</html>
