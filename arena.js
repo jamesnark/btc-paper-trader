@@ -22,7 +22,7 @@ export function syncArena(state, evo, now) {
   state.arena ??= { members: [], retired: [], evoId: null, equity: [], log: [] };
   const A = state.arena;
   if (A.evoId === evo.id) return [];
-  const born = new Date(evo.createdAt * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' });
+  const born = new Date(evo.createdAt * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' });
   const newcomers = [];
   if (evo.version === 2 && evo.production?.ensemble) {
     const E = evo.production.ensemble;

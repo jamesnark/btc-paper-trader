@@ -307,6 +307,8 @@ function renderArena(s) {
   const A = s.arena, card = $('arenaCard');
   if (s.mode !== 'live' || !A?.members?.length) { card.hidden = true; return; }
   card.hidden = false;
+  const dupe = name => A.members.filter(x => x.name === name).length > 1;
+  A.members.forEach(m => { if (dupe(m.name) && !m.name.includes(':')) m.name = m.name.replace(/\)/, `, ${new Date(m.born * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })})`); });
   const series = A.members.map((m, i) => ({ key: m.id, label: m.name, color: ARENA_COLORS[i % ARENA_COLORS.length] }));
   const pts = [{ t: A.members.reduce((a, m) => Math.min(a, m.born), Infinity), ...Object.fromEntries(A.members.map(m => [m.id, 1000])) }, ...(A.equity || [])];
   drawLines('arenaChart', pts, series, { baseline: 1000 });
