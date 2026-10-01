@@ -15,17 +15,18 @@ concurrency:
 jobs:
   tick:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
 
-      - name: Load saved files from the data branch
+      - name: Load saved files (data branch = small live files, dataset branch = training history)
         run: |
           node -v
           mkdir -p out
-          if git fetch -q --depth=1 origin data; then
-            git archive FETCH_HEAD | tar -x -C out
-          fi
+          if git fetch -q --depth=1 origin data; then git archive FETCH_HEAD | tar -x -C out; fi
+          if git fetch -q --depth=1 origin dataset; then git archive FETCH_HEAD | tar -x -C out; fi
+          rm -f out/dataset.json
+          (sha1sum out/dataset.json.gz 2>/dev/null || echo none) > /tmp/ds_before
           ls -la out
 
       - name: Grade finished windows + predict the next one (main model + arena)
@@ -35,19 +36,30 @@ jobs:
         continue-on-error: true
         run: node maybe-backtest.mjs out/backtest.json
 
-      - name: Re-run evolution weekly (or when evolution code changes)
+      - name: Weekly evolution (dataset refresh, walk-forward, fee-free check)
         continue-on-error: true
         run: node maybe-evolve.mjs out
 
-      - name: Save to the data branch
+      - name: Save
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cd out
-          rm -f *.tmp
-          git init -q -b data
-          git config user.name "paper-trader-bot"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -qm "tick $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          git push -qf "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" data
+          REMOTE="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          push_dir () {  # $1 = folder, $2 = branch
+            cd "$1"
+            git init -q -b "$2"
+            git config user.name "paper-trader-bot"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -qm "$2 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push -qf "$REMOTE" "$2"
+            cd - > /dev/null
+          }
+          rm -f out/*.tmp
+          if [ -f out/dataset.json.gz ]; then
+            mkdir -p /tmp/ds && mv out/dataset.json.gz /tmp/ds/
+            if [ "$(sha1sum /tmp/ds/dataset.json.gz | sed 's|/tmp/ds/|out/|')" != "$(cat /tmp/ds_before)" ]; then
+              echo "dataset changed, saving it"; push_dir /tmp/ds dataset
+            fi
+          fi
+          push_dir out data
