@@ -116,7 +116,7 @@
       </ul>
     </details>
   </div>
-  <p class="mute" style="font-size:12px">Data: Polymarket public API (prices, results), Coinbase (BTC candles). Educational simulator only.</p>
+  <p class="mute" style="font-size:12px">Data: Polymarket public API (prices, results), Coinbase (BTC and ETH candles). Educational simulator only. Data can lag about 5 minutes behind GitHub.</p>
 </main>
 
 <script>
@@ -312,7 +312,9 @@ function renderEvo(e) {
   const r100 = x => (x.roi * 100);
   const sv = e.tribes.filter(t => t.verdict === 'survived').length, pr = e.tribes.filter(t => t.verdict === 'promising').length;
   $('status').innerHTML = `<b>Last evolution run:</b> ${tm(e.createdAt)} (${e.seconds}s). ${e.tribes.length} tribes × ${e.params.POP} models × ${e.params.GENS} generations. Re-runs weekly on fresh data.`;
-  $('evoVerdict').innerHTML = `<h2>${sv} of ${e.tribes.length} tribes survived the test week${pr ? `, ${pr} more look promising` : ''}</h2>
+  const head = sv ? `${sv} of ${e.tribes.length} tribes survived the test week${pr ? ` (${pr} more look promising)` : ''}`
+    : pr ? `No tribe fully survived the test week, but ${pr} of ${e.tribes.length} look promising` : `No tribe beat luck on the test week`;
+  $('evoVerdict').innerHTML = `<h2>${head}</h2>
     <p style="margin:0">Trained on <b>${d(e.split.trainFrom)} to ${d(e.split.trainTo)}</b> (${e.split.trainN.toLocaleString()} windows). Tested on the sealed week of <b>${d(e.split.testFrom)} to ${d(e.split.testTo)}</b> (${e.split.testN} windows), which evolution never saw.
     Average test-week profit: <b class="${cls(e.summary.testRoiMean)}">${e.summary.testRoiMean.toFixed(1)}¢ per $1 bet</b> (training said ${e.summary.trainRoiMean.toFixed(1)}¢; the drop is the overfitting gap).
     For reference, on the test week "always pick Up" made ${money(e.reference.test.alwaysUp.pnl)} and "follow the favorite" made ${money(e.reference.test.favorite.pnl)} on 672 flat $10 bets.</p>`;
