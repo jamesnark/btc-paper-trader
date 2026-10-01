@@ -58,6 +58,7 @@ export async function getMarket(start) {
   return {
     slug: slugFor(start),
     title: m.question,
+    conditionId: m.conditionId,
     start,
     end: start + WINDOW,
     outcomes: JSON.parse(m.outcomes || '["Up","Down"]'),
@@ -106,13 +107,15 @@ export function flatFill(price, dollars, rate) {
 
 // 1-minute candles that fully closed before `endTs`.
 export async function getCandles(endTs, minutes = 120, product = 'BTC-USD') {
+  // Coinbase returns at most 300 candles per request, so longer spans are fetched in pieces.
   const iso = s => new Date(s * 1000).toISOString();
   const startTs = endTs - minutes * 60;
-  const rows = await getJSON(`${COINBASE}/products/${product}/candles?granularity=60&start=${iso(startTs)}&end=${iso(endTs)}`);
-  return rows
-    .map(([t, low, high, open, close, volume]) => ({ t, open, high, low, close, volume }))
-    .filter(c => c.t + 60 <= endTs)
-    .sort((a, b) => a.t - b.t);
+  const parts = [];
+  for (let a = startTs; a < endTs; a += 300 * 60) parts.push([a, Math.min(a + 299 * 60, endTs)]);
+  const rows = (await Promise.all(parts.map(([a, b]) =>
+    getJSON(`${COINBASE}/products/${product}/candles?granularity=60&start=${iso(a)}&end=${iso(b)}`)))).flat();
+  const byT = new Map(rows.map(([t, low, high, open, close, volume]) => [t, { t, open, high, low, close, volume }]));
+  return [...byT.values()].filter(c => c.t + 60 <= endTs).sort((a, b) => a.t - b.t);
 }
 
 // Should the model bet, and on which side?
@@ -205,3 +208,35 @@ export function settle(state, round, outcome, t) {
   }
   snapshotEquity(state, t);
 }
+
+// ---------- fee-free ("maker") order simulation ----------
+// Instead of buying at the ask and paying the fee, post a buy order at the bid and wait.
+// You only get filled if someone else trades THROUGH your price, which tends to happen
+// right when the price is moving against you. We count a fill only when a real trade
+// happened at a strictly worse price than ours (conservative: being at the same price
+// isn't enough, since others were in the queue first). No fee, and we ignore the rebate.
+export const DATA_API = 'https://data-api.polymarket.com';
+export async function getTrades(conditionId, maxPages = 8) {
+  const all = [];
+  for (let off = 0; off < maxPages * 500; off += 500) {
+    let page;
+    try { page = await getJSON(`${DATA_API}/trades?market=${conditionId}&limit=500&offset=${off}`, 3); }
+    catch (e) { if (off) break; throw e; }
+    all.push(...page);
+    if (page.length < 500) break;
+  }
+  return all;
+}
+// Shares that traded through a resting buy order at `limit` on `token` between t0 and t1.
+// Buying Down at q is the mirror of selling Up at 1-q, so both tokens count.
+export function makerFillVolume(trades, token, otherToken, limit, t0, t1) {
+  let vol = 0;
+  for (const tr of trades) {
+    if (tr.timestamp < t0 || tr.timestamp > t1) continue;
+    const price = +tr.price;
+    if (tr.asset === token && price < limit - 1e-9) vol += +tr.size;
+    else if (tr.asset === otherToken && price > 1 - limit + 1e-9) vol += +tr.size;
+  }
+  return vol;
+}
+export const MAKER_CANCEL_AFTER = 180; // order rests until 3 minutes into the window, then is cancelled

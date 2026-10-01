@@ -57,7 +57,7 @@
 
   <div class="card" id="arenaCard" hidden>
     <h2>Arena: evolved champions trading live</h2>
-    <p class="mute" style="margin-top:0">Each champion was evolved on past data, then sent here with $1,000 to trade windows that didn't exist when it was born (half-Kelly, max 20% per bet). Each week the worst performer with 50+ bets is eliminated and replaced by a new champion.</p>
+    <p class="mute" style="margin-top:0">Every model here was built from past data, then sent in with $1,000 to trade windows that didn't exist yet (half-Kelly, max 20% per bet). Each weekly evolution adds three versions of the new ensemble: calibrated, uncalibrated, and calibrated with fee-free orders. Above 8 members, the worst with 50+ bets is eliminated (or the oldest retires if nobody has 50 yet).</p>
     <canvas id="arenaChart"></canvas>
     <div class="legend" id="arenaLegend"></div>
     <div class="scroll" style="margin-top:12px"><table id="arenaTable"></table></div>
@@ -88,15 +88,31 @@
   <div id="evoView" hidden>
     <div class="card" id="evoVerdict"></div>
     <div class="card">
-      <h2>How the tribes evolved</h2>
-      <p class="mute" style="margin-top:0">Average of the 5 tribes' best model each generation, as profit per $100 bet. Selection only ever looks at training. The test-week line is a peek for you; evolution can't see it.</p>
-      <canvas id="evoChart"></canvas>
-      <div class="legend" id="evoLegend"></div>
+      <h2>Blind-test bankroll: $1,000, half-Kelly, every out-of-sample bet</h2>
+      <p class="mute" style="margin-top:0">Every bet on this line was made by a model that had never seen that week. Each 4-week block was traded by a model built only from data before it.</p>
+      <canvas id="oosChart"></canvas>
     </div>
     <div class="card">
-      <h2>Tribe champions</h2>
-      <div class="scroll"><table id="evoTable"></table></div>
-      <p class="mute" style="font-size:13px;margin-bottom:0"><b>Luck 95%</b>: reshuffle the test week's Up/Down results 2,000 times and see what this exact model would score. 95% of the random reshuffles score below this. <b>p</b> is the chance pure luck does as well as the real result. There are 5 tribes (5 tries), so "survived" needs p &lt; 0.01, and 0.01 to 0.05 only counts as "promising."</p>
+      <h2>Walk-forward: one blind test per 4-week block</h2>
+      <div class="scroll"><table id="foldTable"></table></div>
+      <p class="mute" style="font-size:13px;margin-bottom:0"><b>Ensemble</b> is the calibrated vote that would have traded. <b>Uncalibrated</b> is the same vote at full confidence. <b>Single champions</b> is the average of the individual evolved models. <b>k</b> is how much of the models' disagreement with the market calibration kept (0 = none, 1 = all).</p>
+    </div>
+    <div class="card">
+      <h2>Is it honest about its confidence?</h2>
+      <div class="scroll"><table id="calTable"></table></div>
+      <p class="mute" style="font-size:13px;margin-bottom:0">For every blind bet: how sure the model said it was vs. how often it actually won. Well calibrated means the two columns match.</p>
+    </div>
+    <div class="card" id="makerCard"></div>
+    <div class="card">
+      <h2>The ensemble trading live now</h2>
+      <div id="prodInfo"></div>
+      <div class="scroll"><table id="champTable"></table></div>
+    </div>
+    <div class="card">
+      <h2>How evolution progressed (live model's run)</h2>
+      <p class="mute" style="margin-top:0">Average best model per generation, profit per $1 bet before calibration. Selection only sees the training weeks; the dashed line is the 4 newer weeks it never trained on.</p>
+      <canvas id="evoChart"></canvas>
+      <div class="legend" id="evoLegend"></div>
     </div>
     <div class="card" id="evoNull"></div>
   </div>
@@ -111,7 +127,10 @@
         <li><b>Kelly</b>: the math-optimal bet size for the edge the model <i>claims</i>. Half Kelly is what most pros use because models are usually overconfident. Betting more than 2x Kelly (like 75% every bet) loses money long-term even with a real edge.</li>
         <li><b>Live vs backtest</b>: live uses the real order book at the moment of the decision. The backtest replays past windows using recorded prices plus half a cent, and decides 10 minutes before each window starts. Trust live more.</li>
         <li>To try a new idea, edit <code>model.js</code> in the repo. The next run picks it up automatically.</li>
-        <li><b>Evolution</b>: models are recipes (which signals to watch, how much to trust the market, when to bet). Each generation the best 10% survive unchanged, and the rest are replaced by mixed and mutated copies of winners. It trains on older weeks and is graded on the newest week, which it never saw.</li>
+        <li><b>Evolution</b>: models are recipes (which of 18 signals to watch, how much to trust the market, when to bet). Each generation the best 10% survive unchanged, and the rest are replaced by mixed and mutated copies of winners. Fitness rewards steady weekly gains, not one lucky week.</li>
+        <li><b>Walk-forward</b>: the last 24 weeks are split into 6 blocks. Each block is traded blind by a model built only from the 26 weeks before it (22 to evolve, 4 to calibrate).</li>
+        <li><b>Calibration</b>: after evolving, we measure how much of the models' disagreement with the market actually paid off on the 4 newer weeks and shrink their confidence to match.</li>
+        <li><b>Fee-free orders</b>: instead of buying at the ask and paying the fee, post a bid and wait. It only fills when a real trade goes through your price, which often happens when the price is moving against you.</li>
         <li><b>Arena</b>: evolved champions trade live with their own $1,000. Live results are the only test a model can't overfit.</li>
       </ul>
     </details>
@@ -150,7 +169,10 @@ async function load() {
     const res = await fetch(SOURCES[mode](), { cache: 'no-store' });
     if (!res.ok) throw new Error(res.status === 404 ? 'No data yet. The first run hasn\'t finished.' : 'HTTP ' + res.status);
     lastState = await res.json();
-    if (mode === 'evolution') renderEvo(lastState); else render(lastState);
+    if (mode === 'evolution') {
+      try { const mr = await fetch(`https://raw.githubusercontent.com/${REPO}/data/maker.json?t=${Date.now()}`, { cache: 'no-store' }); makerData = mr.ok ? await mr.json() : null; } catch { makerData = null; }
+      renderEvo(lastState);
+    } else render(lastState);
   } catch (e) {
     $('status').innerHTML = `<span class="err">Couldn't load ${mode} data: ${e.message}</span>`;
   }
@@ -290,56 +312,78 @@ function renderArena(s) {
     const claimed = mine.length ? mine.reduce((a, r) => { const x = r.arena[m.id]; return a + (x.side === 'Up' ? x.p : 1 - x.p); }, 0) / mine.length : null;
     return { m, eq, claimed };
   }).sort((a, b) => b.eq - a.eq);
-  let h = `<tr><th>#</th><th>Champion</th><th>Test week at birth</th><th class="num">Live bets</th><th class="num">Won</th><th class="num">Claimed confidence</th><th class="num">Bankroll</th><th>Status</th></tr>`;
+  let h = `<tr><th>#</th><th>Champion</th><th>Blind test at birth</th><th class="num">Live bets</th><th class="num">Won</th><th class="num">Claimed confidence</th><th class="num">Bankroll</th><th>Status</th></tr>`;
   ranked.forEach(({ m, eq, claimed }, i) => {
     const color = series.find(z => z.key === m.id).color;
     const wr = m.bets ? m.wins / m.bets : null;
     const status = eq < 3 ? '<span class="pill loss">Broke</span>' : m.bets < 50 ? `<span class="pill pend">Safe until 50 bets</span>` : (i === ranked.length - 1 ? '<span class="pill loss">On the chopping block</span>' : '<span class="pill win">Alive</span>');
-    h += `<tr><td>${i + 1}</td><td style="white-space:normal;min-width:260px"><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${color};margin-right:6px"></i><b>${m.name}</b><div class="mute" style="font-size:12px">${m.desc}</div></td>
-      <td>${pct(m.testAtBirth.winRate)} won, ${signed(m.testAtBirth.roi * 100).replace('$', '')}¢ per $1<div class="mute" style="font-size:12px">${m.testVerdict}</div></td>
+    h += `<tr><td>${i + 1}</td><td style="white-space:normal;min-width:260px"><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${color};margin-right:6px"></i><b>${m.name}</b> ${m.exec === 'maker' && m.orders ? `<span class="pill pend">${pct(m.fillSum / m.orders)} of orders filled</span>` : ''}<div class="mute" style="font-size:12px">${m.desc}</div></td>
+      <td>${pct(m.testAtBirth.winRate)} won, ${(m.testAtBirth.roi * 100).toFixed(1)}¢ per $1<div class="mute" style="font-size:12px">${m.testAtBirth.label || 'test week'}: ${m.testVerdict}</div></td>
       <td class="num">${m.bets}</td><td class="num">${wr == null ? 'n/a' : pct(wr) + ` <span class="mute">±${pct(margin(wr, m.bets))}</span>`}</td>
       <td class="num">${claimed == null ? 'n/a' : pct(claimed)}</td>
       <td class="num ${cls(eq - 1000)}">${money(eq)}</td><td>${status}</td></tr>`;
   });
-  if (A.retired?.length) h += A.retired.map(m => `<tr class="mute"><td>✝</td><td>${m.name}</td><td colspan="4">Eliminated ${tm(m.retiredAt)} after ${m.bets} bets</td><td class="num">${money(m.finalEquity)}</td><td><span class="pill loss">Eliminated</span></td></tr>`).join('');
+  if (A.retired?.length) h += A.retired.map(m => `<tr class="mute"><td>✝</td><td>${m.name}</td><td colspan="4">${m.retireReason || 'Eliminated'} ${tm(m.retiredAt)} after ${m.bets} bets</td><td class="num">${money(m.finalEquity)}</td><td><span class="pill loss">${(m.retireReason || '').startsWith('retired') ? 'Retired' : 'Eliminated'}</span></td></tr>`).join('');
   $('arenaTable').innerHTML = h;
   $('arenaLog').innerHTML = (A.log || []).slice(0, 6).map(e => `${tm(e.t)}: ${e.m}`).join('<br>') +
     `<br>"Claimed confidence" is how sure the model said it was on its bets. If it says 65% but wins 55%, it's overconfident and bets too big.`;
 }
 
+let makerData = null;
 function renderEvo(e) {
+  if (e.version !== 2) { $('status').innerHTML = 'Evolution data is in the old format. The next weekly run will upgrade it.'; return; }
   const d = t => new Date(t * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' });
-  const r100 = x => (x.roi * 100);
-  const sv = e.tribes.filter(t => t.verdict === 'survived').length, pr = e.tribes.filter(t => t.verdict === 'promising').length;
-  $('status').innerHTML = `<b>Last evolution run:</b> ${tm(e.createdAt)} (${e.seconds}s). ${e.tribes.length} tribes × ${e.params.POP} models × ${e.params.GENS} generations. Re-runs weekly on fresh data.`;
-  const head = sv ? `${sv} of ${e.tribes.length} tribes survived the test week${pr ? ` (${pr} more look promising)` : ''}`
-    : pr ? `No tribe fully survived the test week, but ${pr} of ${e.tribes.length} look promising` : `No tribe beat luck on the test week`;
+  const dy = t => new Date(t * 1000).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+  const o = e.oos;
+  $('status').innerHTML = `<b>Last evolution run:</b> ${tm(e.createdAt)} (${Math.round(e.seconds)}s). Data: ${e.data.rows.toLocaleString()} windows from ${dy(e.data.from)} to ${dy(e.data.to)}. Re-runs weekly.`;
+  const head = { 'edge held up': 'The edge held up in blind testing', 'positive but unproven': 'Profitable in blind testing, but not proven', 'no edge after fees': 'No edge after fees in blind testing', 'not enough bets': 'Not enough blind bets to judge' }[e.verdict];
   $('evoVerdict').innerHTML = `<h2>${head}</h2>
-    <p style="margin:0">Trained on <b>${d(e.split.trainFrom)} to ${d(e.split.trainTo)}</b> (${e.split.trainN.toLocaleString()} windows). Tested on the sealed week of <b>${d(e.split.testFrom)} to ${d(e.split.testTo)}</b> (${e.split.testN} windows), which evolution never saw.
-    Average test-week profit: <b class="${cls(e.summary.testRoiMean)}">${e.summary.testRoiMean.toFixed(1)}¢ per $1 bet</b> (training said ${e.summary.trainRoiMean.toFixed(1)}¢; the drop is the overfitting gap).
-    For reference, on the test week "always pick Up" made ${money(e.reference.test.alwaysUp.pnl)} and "follow the favorite" made ${money(e.reference.test.favorite.pnl)} on 672 flat $10 bets.</p>`;
-  const avg = (gen, k, arr) => { const v = arr.map(t => t.history[gen]?.[k]).filter(x => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
-  const pts = e.tribes[0].history.map((_, gen) => ({ gen, train: avg(gen, 'train', e.tribes), test: avg(gen, 'test', e.tribes), nullTrain: avg(gen, 'train', e.nulls) }));
+    <div class="grid" style="margin:10px 0 6px">
+      <div class="kpi"><div class="l">Blind bets</div><div class="v">${o.bets.toLocaleString()}</div><div class="n">over ${o.weeks} weeks (${d(o.from)} to ${d(o.to)})</div></div>
+      <div class="kpi"><div class="l">Won</div><div class="v">${pct(o.winRate)}</div><div class="n">needed about ${pct(0.528)} to break even</div></div>
+      <div class="kpi"><div class="l">Profit per $1 bet, after fees</div><div class="v ${cls(o.roi)}">${o.roi.toFixed(1)}¢</div><div class="n">95% range: ${o.ci[0].toFixed(1)}¢ to ${o.ci[1].toFixed(1)}¢</div></div>
+      <div class="kpi"><div class="l">Profitable weeks</div><div class="v">${o.profitableWeeks} / ${o.activeWeeks}</div><div class="n" style="margin:0">weeks with bets (${o.weeks - o.activeWeeks} weeks it sat out)</div><div class="n">chance true edge is zero or less: ${(o.p * 100).toFixed(1)}%</div></div>
+    </div>
+    <p style="margin:0" class="mute">$1,000 at half-Kelly would have ended at <b class="${cls(o.finalKelly - 1000)}">${money(o.finalKelly)}</b>; flat $10 bets made <b class="${cls(o.flatPnl)}">${signed(o.flatPnl)}</b>.
+    Same period, flat $10 on every window: "follow the favorite" ${signed(o.baselines.favorite.pnl)}, "always Up" ${signed(o.baselines.alwaysUp.pnl)}.
+    Single champions averaged ${o.singles.roi.toFixed(1)}¢ on ${o.singles.bets.toLocaleString()} bets.</p>
+    <p style="margin:8px 0 0"><b>Uncalibrated vote:</b> ${o.raw.bets.toLocaleString()} bets, ${pct(o.raw.winRate)} won, <b class="${cls(o.raw.roi)}">${o.raw.roi.toFixed(1)}¢ per $1</b> (95% range ${o.raw.ci[0].toFixed(1)}¢ to ${o.raw.ci[1].toFixed(1)}¢).
+    It beat the calibrated vote here, but choosing it <i>because</i> it won the blind test would be overfitting the test. Both trade live in the arena, and live results decide.</p>`;
+  drawLines('oosChart', o.equity, [{ key: 'kelly', color: '#1565c0' }], { baseline: 1000 });
+  let f = `<tr><th>Test block</th><th class="num">Bets</th><th class="num">Won</th><th class="num">Ensemble ¢/$1</th><th class="num">95% range</th><th class="num">Uncalibrated</th><th class="num">Single champions</th><th class="num">k</th></tr>`;
+  for (const x of e.folds) f += `<tr><td>${d(x.testFrom)} to ${d(x.testTo)}</td><td class="num">${x.ens.bets}</td><td class="num">${x.ens.bets ? pct(x.ens.winRate) : 'n/a'}</td>
+    <td class="num ${cls(x.ens.roi)}"><b>${x.ens.roi.toFixed(1)}¢</b></td><td class="num mute">${x.ens.ci ? x.ens.ci[0].toFixed(0) + ' to ' + x.ens.ci[1].toFixed(0) + '¢' : ''}</td>
+    <td class="num ${cls(x.raw.roi)}">${x.raw.roi.toFixed(1)}¢ <span class="mute">(${x.raw.bets})</span></td><td class="num ${cls(x.singles.roi)}">${x.singles.roi.toFixed(1)}¢</td><td class="num">${x.k.toFixed(2)}</td></tr>`;
+  $('foldTable').innerHTML = f;
+  let c = `<tr><th>Model said</th><th class="num">Calibrated: bets</th><th class="num">Claimed</th><th class="num">Actually won</th><th class="num">Uncalibrated: bets</th><th class="num">Claimed</th><th class="num">Actually won</th></tr>`;
+  o.calibration.forEach((x, i) => { const r = o.calibrationRaw[i]; c += `<tr><td>${x.bin}</td><td class="num">${x.n}</td><td class="num">${x.claimed == null ? '' : pct(x.claimed)}</td><td class="num">${x.actual == null ? '' : pct(x.actual)}</td><td class="num">${r.n}</td><td class="num">${r.claimed == null ? '' : pct(r.claimed)}</td><td class="num">${r.actual == null ? '' : pct(r.actual)}</td></tr>`; });
+  $('calTable').innerHTML = c;
+  const mk = makerData && makerData.evoId === e.id ? makerData : makerData;
+  $('makerCard').innerHTML = !mk ? `<h2>Fee-free orders</h2><p class="mute" style="margin:0">Not checked yet. This runs right after evolution.</p>` : `<h2>Fee-free orders: would they have worked?</h2>
+    <p style="margin:0">Replayed ${mk.bets} recent blind bets of the uncalibrated vote (${d(mk.from)} to ${d(mk.to)}) as fee-free orders at the bid, cancelled 3 minutes into the window, against Polymarket's real trade record.</p>
+    <div class="grid" style="margin:10px 0 0">
+      <div class="kpi"><div class="l">Average fill</div><div class="v">${pct(mk.avgFillRate)}</div><div class="n">${mk.fullFill} filled completely, ${mk.noFill} not at all</div></div>
+      <div class="kpi"><div class="l">Paying the fee (taker)</div><div class="v ${cls(mk.taker.roi)}">${mk.taker.roi.toFixed(1)}¢</div><div class="n">per $1, ${signed(mk.taker.pnl)} on $10 bets</div></div>
+      <div class="kpi"><div class="l">Fee-free (maker)</div><div class="v ${cls(mk.maker.roi ?? 0)}">${mk.maker.roi == null ? 'n/a' : mk.maker.roi.toFixed(1) + '¢'}</div><div class="n">per $1 actually filled, ${signed(mk.maker.pnl)} total</div></div>
+      <div class="kpi"><div class="l">Win rate: filled vs. missed</div><div class="v">${mk.winRate.filled == null ? 'n/a' : pct(mk.winRate.filled)}</div><div class="n">vs. ${mk.winRate.unfilled == null ? 'n/a' : pct(mk.winRate.unfilled)} on orders that never filled. A gap means fills come at bad moments.</div></div>
+    </div>`;
+  const pr = e.production, E = pr.ensemble;
+  $('prodInfo').innerHTML = `<p style="margin-top:0">Evolved on ${d(pr.trainFrom)} to ${d(pr.calibFrom)}, calibrated on ${d(pr.calibFrom)} to ${d(pr.calibTo)}. The vote keeps <b>${(E.k * 100).toFixed(0)}%</b> of the champions' disagreement with the market and bets when it sees at least ${(E.minEdge * 100).toFixed(1)}¢ of edge after fees. It trades in the Live tab's arena three ways: calibrated, uncalibrated, and fee-free.</p>`;
+  let t = `<tr><th>Champion</th><th>What it learned</th><th class="num">Training</th><th class="num">Newer 4 weeks (raw)</th><th class="num">Calibrated</th></tr>`;
+  for (const x of pr.champions) t += `<tr><td>${x.tribe}</td><td style="white-space:normal;min-width:300px;font-size:13px">${x.desc}<div class="mute">k = ${x.genome.k} (${x.note})</div></td>
+    <td class="num">${pct(x.train.winRate)}<br><span class="mute">${x.train.roi.toFixed(1)}¢, ${x.train.bets}</span></td>
+    <td class="num">${x.calibRaw.bets ? pct(x.calibRaw.winRate) : 'n/a'}<br><span class="${cls(x.calibRaw.roi)}">${x.calibRaw.roi.toFixed(1)}¢</span><span class="mute">, ${x.calibRaw.bets}</span></td>
+    <td class="num">${x.calib.bets ? pct(x.calib.winRate) : 'n/a'}<br><span class="${cls(x.calib.roi)}">${x.calib.roi.toFixed(1)}¢</span><span class="mute">, ${x.calib.bets}</span></td></tr>`;
+  $('champTable').innerHTML = t;
   const series = [
-    { key: 'train', label: 'Real tribes: training', color: '#1565c0' },
-    { key: 'test', label: 'Real tribes: sealed test week', color: '#2e7d32', dash: true },
-    { key: 'nullTrain', label: 'Scrambled-data tribes: training (pure overfitting)', color: '#d84315' },
+    { key: 'train', label: 'Training weeks', color: '#1565c0' },
+    { key: 'peek', label: 'Newer 4 weeks (never trained on)', color: '#2e7d32', dash: true },
   ];
-  drawLines('evoChart', pts, series, { x: p => p.gen, baseline: 0, fmt: v => v.toFixed(0) + '¢', xfmt: g => 'gen ' + g });
+  drawLines('evoChart', pr.history, series, { x: p => p.gen, baseline: 0, fmt: v => v.toFixed(0) + '¢', xfmt: g => 'gen ' + g });
   $('evoLegend').innerHTML = series.map(z => `<span><i style="background:${z.color}"></i>${z.label}</span>`).join('');
-  const vp = v => ({ survived: 'win', promising: 'pend', 'luck-level': 'pend', 'failed the test week': 'loss', 'too few bets': 'pend' }[v] || 'pend');
-  let h = `<tr><th>Tribe</th><th>What it learned</th><th class="num">Training</th><th class="num">Test week</th><th class="num">Luck 95%</th><th class="num">p</th><th>Verdict</th></tr>`;
-  for (const t of e.tribes) {
-    h += `<tr><td>${t.tribe}</td><td style="white-space:normal;min-width:280px;font-size:13px">${t.desc}</td>
-      <td class="num">${pct(t.train.winRate)} won<br><span class="mute">${r100(t.train).toFixed(1)}¢/$1, ${t.train.bets} bets</span></td>
-      <td class="num"><b>${pct(t.test.winRate)} won</b><br><span class="${cls(t.test.roi)}">${r100(t.test).toFixed(1)}¢/$1</span><span class="mute">, ${t.test.bets} bets</span></td>
-      <td class="num">${t.perm ? t.perm.luck95.toFixed(1) + '¢' : 'n/a'}</td><td class="num">${t.perm ? t.perm.p : 'n/a'}</td>
-      <td><span class="pill ${vp(t.verdict)}">${t.verdict}</span></td></tr>`;
-  }
-  $('evoTable').innerHTML = h;
   $('evoNull').innerHTML = `<h2>The scrambled-data check</h2>
-    <p style="margin:0">${e.nulls.length} extra tribes evolved on training data where the Up/Down results were randomly shuffled, so no real pattern existed. They still "won" ${pct(Math.max(...e.nulls.map(n => n.train.winRate)))} at best in training, averaging <b>${e.luck.trainMean.toFixed(1)}¢ profit per $1</b>.
-    That's how much evolution can fool you on data it trains on. Training scores mean nothing by themselves; only the sealed test week and live results count.</p>`;
+    <p style="margin:0">${e.nulls.length} extra tribes evolved on the same training weeks with Up/Down randomly shuffled, so there was nothing real to find. They still scored up to ${pct(e.luck.trainWinMax)} wins and averaged <b>${e.luck.trainRoiMean.toFixed(1)}¢ per $1</b> in training (the real champions: ${(pr.champions.reduce((a, x) => a + x.train.roi, 0) / pr.champions.length).toFixed(1)}¢).
+    Training scores alone prove nothing; that's why everything above is judged on blind weeks.</p>`;
 }
 
 document.querySelectorAll('.tabs button').forEach(btn => btn.onclick = () => {

@@ -19,6 +19,12 @@ export const FEATURES = [
   { key: 'hourCos',   label: 'time of day (cycle B)' },
   { key: 'usHours',   label: 'US stock market open' },
   { key: 'weekend',   label: 'weekend' },
+  // v2 additions (appended so older models keep working)
+  { key: 'fundSin',   label: 'futures funding cycle (A)' },
+  { key: 'fundCos',   label: 'futures funding cycle (B)' },
+  { key: 'mktDrift',  label: 'market price drift, last 20 min' },
+  { key: 'perpBasis', label: 'futures premium vs. its 4-hour normal' },
+  { key: 'perpLead',  label: 'futures moving ahead of spot' },
 ];
 export const NF = FEATURES.length;
 export const FI = Object.fromEntries(FEATURES.map((f, i) => [f.key, i]));
@@ -42,7 +48,8 @@ export function etParts(ts) {
 }
 
 // btcC/btcV/ethC: arrays of closes/volumes. windowStart: unix seconds the window opens.
-export function computeFeatures(btcC, btcV, ethC, windowStart) {
+// extra (optional): { perpC: futures closes aligned to the same minutes, upNow, upPast: market Up price now and 20 min ago }
+export function computeFeatures(btcC, btcV, ethC, windowStart, extra = {}) {
   const n = btcC.length;
   if (n < MIN_MINUTES || ethC.length < 16) return null;
   const sd60 = sdLogRet(btcC, 60), sd240 = sdLogRet(btcC, 240);
@@ -64,6 +71,21 @@ export function computeFeatures(btcC, btcV, ethC, windowStart) {
   const isWeekend = weekday === 'Sat' || weekday === 'Sun';
   const us = !isWeekend && h >= 9.5 && h < 16;
 
+  // funding: perpetual futures traders pay each other every 8h (00:00, 08:00, 16:00 UTC)
+  const d = new Date(windowStart * 1000);
+  const fphase = (2 * Math.PI * ((d.getUTCHours() % 8) + d.getUTCMinutes() / 60)) / 8;
+  const lg = p => Math.log(p / (1 - p));
+  const { perpC, upNow, upPast } = extra;
+  const mktDrift = upNow > 0 && upNow < 1 && upPast > 0 && upPast < 1 ? clip((lg(upNow) - lg(upPast)) * 5) : 0;
+  let perpBasis = 0, perpLead = 0;
+  if (perpC && perpC.length === n && perpC[n - 1] > 0) {
+    let sum = 0, cnt = 0;
+    for (let i = n - 240; i < n; i++) if (perpC[i] > 0 && btcC[i] > 0) { sum += (perpC[i] / btcC[i] - 1) * 1e4; cnt++; }
+    const now = (perpC[n - 1] / btcC[n - 1] - 1) * 1e4;
+    perpBasis = cnt ? clip((now - sum / cnt) / 3) : 0;
+    if (perpC[n - 6] > 0) perpLead = clip((Math.log(perpC[n - 1] / perpC[n - 6]) - Math.log(btcC[n - 1] / btcC[n - 6])) / (sd60 * Math.sqrt(5)) * 3);
+  }
+
   return [
     clip(btc5),
     clip(mom(btcC, 15, sd60)),
@@ -78,5 +100,28 @@ export function computeFeatures(btcC, btcV, ethC, windowStart) {
     Math.cos((2 * Math.PI * h) / 24),
     us ? 1 : 0,
     isWeekend ? 1 : 0,
+    Math.sin(fphase),
+    Math.cos(fphase),
+    mktDrift,
+    perpBasis,
+    perpLead,
   ];
+}
+
+// Live helper: put candle lists on one shared minute grid (forward-filling gaps) so every
+// series lines up exactly like the training data. lists: {name: [{t, close, volume}]}
+export function alignMinutes(lists, lastMinuteStart, minutes) {
+  const out = {};
+  for (const [name, rows] of Object.entries(lists)) {
+    const m = new Map(rows.map(r => [r.t, r]));
+    const c = new Array(minutes), v = new Array(minutes);
+    let last = rows.length ? rows[0].close : 0;
+    for (let i = 0; i < minutes; i++) {
+      const r = m.get(lastMinuteStart - (minutes - 1 - i) * 60);
+      if (r) last = r.close;
+      c[i] = last; v[i] = r ? r.volume || 0 : 0;
+    }
+    out[name] = { c, v };
+  }
+  return out;
 }

@@ -22,18 +22,24 @@ The same predictions run through four bet-sizing rules, each starting with $1,00
 - coin flip
 - follow the market favorite
 
-## Evolution and the arena
+## Evolution (v2): walk-forward, calibration, ensemble, fee-free orders
 
-Once a week (and whenever the evolution code changes), the workflow:
+Once a week (and whenever the evolution code changes), `maybe-evolve.mjs`:
 
-1. **Refreshes `dataset.json`**: 5 weeks of windows (market price 10 minutes before the start, plus the official result) and 1-minute BTC and ETH candles.
-2. **Runs `evolve.mjs`**. Each model is a genome: which of 13 signals it watches and how much (momentum, volatility, range position, volume, ETH, time of day...), how much it trusts the market price, a minimum edge, and "only bet when..." filters.
-   - 5 tribes × 80 models × 40 generations, evolved on everything **except the most recent 7 days**.
-   - Fitness = log growth of a half-Kelly bankroll after fees, minus a small complexity penalty.
-   - **Sealed test week:** the champions are scored on the last 7 days, which selection never sees.
-   - **Permutation test:** the test week's results are reshuffled 2,000 times to get a p-value. Because there are 5 tribes, "survived" means p < 0.01.
-   - **Scrambled-data tribes:** 5 extra tribes evolve on shuffled results. Their training scores show how much evolution can fool itself.
-3. **Arena (`arena.js`)**: champions trade live with $1,000 each (half-Kelly, max 20% per bet). On each new evolution run, the worst member with 50+ bets (or anyone broke) is eliminated and replaced by the best new champion.
+1. **Refreshes the dataset** (`dataset.json.gz`, kept on its own `dataset` branch). It covers about 12 months of 15-minute windows, with the market's Up price every minute from 36 to 3 minutes before each window and the official result. It also has 1-minute candles for BTC and ETH (Coinbase) and BTC perpetual futures (Deribit).
+2. **Runs `evolve.mjs`.**
+   - Models are genomes over 18 signals: momentum, volatility, range, volume, ETH, time of day, the futures funding cycle, the market's own price drift, the futures premium, and futures-vs-spot lead.
+   - Training mixes decisions made 10, 7 and 4 minutes before the window.
+   - Fitness rewards *steady weekly* growth: mean minus half the standard deviation of weekly half-Kelly log-growth, minus a complexity penalty.
+   - **Walk-forward:** the last 24 weeks are split into 6 blocks of 4 weeks. Each block is traded blind by a model built only from the 26 weeks before it: 22 weeks to evolve 3 tribes, then 4 weeks to calibrate.
+   - **Calibration:** the probability is `sigmoid(marketLogit + k × disagreement)`, and k (0 to 2) is fit on the calibration weeks. A k near 0 means "the models' disagreement with the market didn't pay off, so mostly trust the market."
+   - **Ensemble:** the champions average their disagreement with the market, and the ensemble bets with a 2¢ minimum edge after fees.
+   - **Stats:** profit per $1 with a week-block bootstrap 95% range, the chance the true edge is ≤ 0, profitable weeks, a calibration table, and baselines.
+   - **Production:** the same recipe on the newest 26 weeks (5 tribes) produces the ensemble that trades live.
+   - **Scrambled-data tribes** show how much training scores overstate skill.
+3. **Runs `maker-check.mjs`.** It replays about 3 weeks of blind bets as fee-free orders at the bid, cancelled 3 minutes into the window, against Polymarket's real trade record. A fill only counts when a trade went strictly through our price.
+
+**Arena (`arena.js`):** each evolution run adds the new ensemble twice, once paying fees ("taker") and once with fee-free orders ("maker", filled using the real trades). There are at most 8 members; the worst with 50+ bets is eliminated, otherwise the oldest retires.
 
 ## Files
 
@@ -44,10 +50,12 @@ Once a week (and whenever the evolution code changes), the workflow:
 | `run.mjs` | One live tick (grade and predict) |
 | `backtest.mjs` | Replays the last N days: `node backtest.mjs 7 backtest.json` |
 | `maybe-backtest.mjs` | Re-runs the backtest automatically when `model.js` changes, or once a day |
-| `features.js` | The 13 signals evolved models can use (shared by training and live) |
+| `features.js` | The 18 signals evolved models can use (shared by training and live) |
+| `dsio.js` | Compressed dataset read/write |
+| `maker-check.mjs` | Fee-free order replay against real trades |
 | `genome.js` | What a model is: predict, mutate, crossover, plain-English description |
-| `dataset.mjs` | Builds/refreshes the 5-week dataset (incremental) |
-| `evolve.mjs` | Tribes, sealed test week, permutation test, scrambled-data tribes |
+| `dataset.mjs` | Builds/refreshes the ~12-month dataset (incremental, time-budgeted) |
+| `evolve.mjs` | Walk-forward evolution, calibration, ensemble, bootstrap stats |
 | `maybe-evolve.mjs` | Runs the above weekly or when the code changes |
 | `arena.js` | Live competition between champions, weekly elimination |
 | `index.html` | Dashboard (GitHub Pages) |

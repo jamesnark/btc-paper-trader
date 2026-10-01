@@ -73,10 +73,36 @@ export function gatePass(g, f) {
   return true;
 }
 
-export function pUpOf(g, f, upMid) {
+// Raw score (log-odds). Older genomes have fewer weights; they just ignore newer features.
+export function zOf(g, f, upMid) {
   let z = g.a * logit(clamp(upMid, 0.02, 0.98)) + g.b;
-  for (let i = 0; i < NF; i++) if (g.on[i]) z += g.w[i] * f[i];
-  return clamp(sigmoid(z), 0.02, 0.98);
+  for (let i = 0; i < g.w.length; i++) if (g.on[i]) z += g.w[i] * f[i];
+  return z;
+}
+
+// k = calibration: how much of the model's disagreement with the market to keep (fit after evolution).
+export function pUpOf(g, f, upMid) {
+  const L = logit(clamp(upMid, 0.02, 0.98));
+  const z = zOf(g, f, upMid);
+  const k = g.k ?? 1;
+  return clamp(sigmoid(L + k * (z - L)), 0.02, 0.98);
+}
+
+// ---------- ensemble: the champions vote by averaging how much they disagree with the market ----------
+// E = { members: [genome], k, minEdge }. A member whose filters say "don't bet now" votes 0 (= agree with market).
+export function ensembleDev(E, f, upMid) {
+  const L = logit(clamp(upMid, 0.02, 0.98));
+  let d = 0;
+  for (const g of E.members) if (gatePass(g, f)) d += zOf(g, f, upMid) - L;
+  return d / E.members.length;
+}
+export function ensemblePUp(E, f, upMid) {
+  const L = logit(clamp(upMid, 0.02, 0.98));
+  return clamp(sigmoid(L + E.k * ensembleDev(E, f, upMid)), 0.02, 0.98);
+}
+export function ensembleDecision(E, f, upMid, upAsk, downAsk, rate) {
+  const pUp = ensemblePUp(E, f, upMid);
+  return { pUp, bet: pickBet(pUp, upAsk, downAsk, rate, E.minEdge) };
 }
 
 // Same rule as the main model: bet the side with the most edge after fees, if edge >= minEdge.
@@ -122,18 +148,24 @@ export function evaluate(g, rows, outcomes) {
 }
 
 // ---------- plain-English description ----------
-const TREND = new Set(['mom5', 'mom15', 'mom60', 'mom240', 'eth15']);
+const TREND = new Set(['mom5', 'mom15', 'mom60', 'mom240', 'eth15', 'mktDrift']);
 export function describe(g) {
   const parts = [];
-  const genes = FEATURES.map((ft, i) => ({ ...ft, i, w: g.w[i], on: g.on[i] }))
+  const genes = FEATURES.slice(0, g.w.length).map((ft, i) => ({ ...ft, i, w: g.w[i], on: g.on[i] }))
     .filter(x => x.on && Math.abs(x.w) >= 0.02)
     .sort((x, y) => Math.abs(y.w) - Math.abs(x.w));
   let timeDone = false;
-  for (const x of genes.slice(0, 4)) {
+  const seen = new Set();
+  for (const x of genes.slice(0, 5)) {
+    const fam = x.key.startsWith('fund') ? 'fund' : x.key;
+    if (fam === 'fund' && seen.has('fund')) continue; seen.add(fam);
     const strength = Math.abs(x.w) > 0.25 ? 'strongly ' : Math.abs(x.w) < 0.07 ? 'slightly ' : '';
     if (TREND.has(x.key)) parts.push(`${strength}${x.w > 0 ? 'follows' : 'bets against'} the ${x.label.toLowerCase()}`);
     else if (x.key === 'ethLead') parts.push(`${strength}${x.w > 0 ? 'follows ETH when it moves first' : 'fades ETH when it moves first'}`);
     else if (x.key === 'hourSin' || x.key === 'hourCos') { if (!timeDone) parts.push('has a time-of-day pattern'); timeDone = true; }
+    else if (x.key === 'fundSin' || x.key === 'fundCos') parts.push('has a futures-funding-cycle pattern');
+    else if (x.key === 'perpLead') parts.push(`${strength}${x.w > 0 ? 'follows futures when they move first' : 'fades futures when they move first'}`);
+    else if (x.key === 'perpBasis') parts.push(`${strength}leans ${x.w > 0 ? 'Up' : 'Down'} when the futures premium is unusually high`);
     else if (x.key === 'usHours' || x.key === 'weekend') parts.push(`${strength}leans ${x.w > 0 ? 'Up' : 'Down'} during ${x.label}`);
     else if (x.key === 'rangePos') parts.push(`${strength}${x.w > 0 ? 'leans Up near the top of the hourly range (breakouts)' : 'leans Down near the top of the hourly range (pullbacks)'}`);
     else parts.push(`${strength}leans ${x.w > 0 ? 'Up' : 'Down'} when ${x.label.toLowerCase()} is high`);
@@ -147,3 +179,5 @@ export function describe(g) {
 }
 
 export const complexity = g => g.on.reduce((s, on, i) => s + (on ? 0.004 + 0.03 * Math.abs(g.w[i]) : 0), 0);
+export const calibrationNote = k => k < 0.15 ? 'calibration shrank it almost to the market price (little real signal)'
+  : k < 0.6 ? `calibration kept ${(k * 100).toFixed(0)}% of its confidence` : k <= 1.1 ? 'well calibrated' : 'was under-confident';
