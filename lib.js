@@ -105,10 +105,10 @@ export function flatFill(price, dollars, rate) {
 }
 
 // 1-minute candles that fully closed before `endTs`.
-export async function getCandles(endTs, minutes = 120) {
+export async function getCandles(endTs, minutes = 120, product = 'BTC-USD') {
   const iso = s => new Date(s * 1000).toISOString();
   const startTs = endTs - minutes * 60;
-  const rows = await getJSON(`${COINBASE}/products/BTC-USD/candles?granularity=60&start=${iso(startTs)}&end=${iso(endTs)}`);
+  const rows = await getJSON(`${COINBASE}/products/${product}/candles?granularity=60&start=${iso(startTs)}&end=${iso(endTs)}`);
   return rows
     .map(([t, low, high, open, close, volume]) => ({ t, open, high, low, close, volume }))
     .filter(c => c.t + 60 <= endTs)

@@ -22,6 +22,19 @@ The same predictions run through four bet-sizing rules, each starting with $1,00
 - coin flip
 - follow the market favorite
 
+## Evolution and the arena
+
+Once a week (and whenever the evolution code changes), the workflow:
+
+1. **Refreshes `dataset.json`**: 5 weeks of windows (market price 10 minutes before the start, plus the official result) and 1-minute BTC and ETH candles.
+2. **Runs `evolve.mjs`**. Each model is a genome: which of 13 signals it watches and how much (momentum, volatility, range position, volume, ETH, time of day...), how much it trusts the market price, a minimum edge, and "only bet when..." filters.
+   - 5 tribes × 80 models × 40 generations, evolved on everything **except the most recent 7 days**.
+   - Fitness = log growth of a half-Kelly bankroll after fees, minus a small complexity penalty.
+   - **Sealed test week:** the champions are scored on the last 7 days, which selection never sees.
+   - **Permutation test:** the test week's results are reshuffled 2,000 times to get a p-value. Because there are 5 tribes, "survived" means p < 0.01.
+   - **Scrambled-data tribes:** 5 extra tribes evolve on shuffled results. Their training scores show how much evolution can fool itself.
+3. **Arena (`arena.js`)**: champions trade live with $1,000 each (half-Kelly, max 20% per bet). On each new evolution run, the worst member with 50+ bets (or anyone broke) is eliminated and replaced by the best new champion.
+
 ## Files
 
 | File | What it is |
@@ -31,6 +44,12 @@ The same predictions run through four bet-sizing rules, each starting with $1,00
 | `run.mjs` | One live tick (grade and predict) |
 | `backtest.mjs` | Replays the last N days: `node backtest.mjs 7 backtest.json` |
 | `maybe-backtest.mjs` | Re-runs the backtest automatically when `model.js` changes, or once a day |
+| `features.js` | The 13 signals evolved models can use (shared by training and live) |
+| `genome.js` | What a model is: predict, mutate, crossover, plain-English description |
+| `dataset.mjs` | Builds/refreshes the 5-week dataset (incremental) |
+| `evolve.mjs` | Tribes, sealed test week, permutation test, scrambled-data tribes |
+| `maybe-evolve.mjs` | Runs the above weekly or when the code changes |
+| `arena.js` | Live competition between champions, weekly elimination |
 | `index.html` | Dashboard (GitHub Pages) |
 | `.github/workflows/tick.yml` | The every-5-minutes schedule |
 

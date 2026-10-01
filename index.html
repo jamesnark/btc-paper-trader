@@ -30,6 +30,7 @@
   .pill { display:inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight:600; }
   .win { background:#e6f4ea; color: var(--up); } .loss { background:#fdecea; color: var(--down); } .pend { background:#eef2f7; color: var(--mute); }
   canvas { width:100%; height: 300px; display:block; }
+  [hidden] { display: none !important; }
   .legend { display:flex; flex-wrap:wrap; gap: 14px; margin-top: 8px; font-size: 13px; }
   .legend i { display:inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
   details summary { cursor: pointer; font-weight: 600; }
@@ -46,11 +47,22 @@
   <div class="tabs">
     <button data-mode="live" class="on">Live</button>
     <button data-mode="backtest">Backtest (past 7 days)</button>
+    <button data-mode="evolution">Evolution</button>
   </div>
 
   <div id="status" class="card mute">Loading...</div>
+  <div id="traderView">
   <div id="next"></div>
   <div class="grid" id="kpis"></div>
+
+  <div class="card" id="arenaCard" hidden>
+    <h2>Arena: evolved champions trading live</h2>
+    <p class="mute" style="margin-top:0">Each champion was evolved on past data, then sent here with $1,000 to trade windows that didn't exist when it was born (half-Kelly, max 20% per bet). Each week the worst performer with 50+ bets is eliminated and replaced by a new champion.</p>
+    <canvas id="arenaChart"></canvas>
+    <div class="legend" id="arenaLegend"></div>
+    <div class="scroll" style="margin-top:12px"><table id="arenaTable"></table></div>
+    <div id="arenaLog" class="mute" style="font-size:13px;margin-top:8px"></div>
+  </div>
 
   <div class="card">
     <h2>Same predictions, four ways to size bets</h2>
@@ -71,6 +83,24 @@
     <div class="scroll"><table id="rounds"></table></div>
   </div>
 
+  </div><!-- /traderView -->
+
+  <div id="evoView" hidden>
+    <div class="card" id="evoVerdict"></div>
+    <div class="card">
+      <h2>How the tribes evolved</h2>
+      <p class="mute" style="margin-top:0">Average of the 5 tribes' best model each generation, as profit per $100 bet. Selection only ever looks at training. The test-week line is a peek for you; evolution can't see it.</p>
+      <canvas id="evoChart"></canvas>
+      <div class="legend" id="evoLegend"></div>
+    </div>
+    <div class="card">
+      <h2>Tribe champions</h2>
+      <div class="scroll"><table id="evoTable"></table></div>
+      <p class="mute" style="font-size:13px;margin-bottom:0"><b>Luck 95%</b>: reshuffle the test week's Up/Down results 2,000 times and see what this exact model would score. 95% of the random reshuffles score below this. <b>p</b> is the chance pure luck does as well as the real result. There are 5 tribes (5 tries), so "survived" needs p &lt; 0.01, and 0.01 to 0.05 only counts as "promising."</p>
+    </div>
+    <div class="card" id="evoNull"></div>
+  </div>
+
   <div class="card explain">
     <details>
       <summary>How to read this</summary>
@@ -81,6 +111,8 @@
         <li><b>Kelly</b>: the math-optimal bet size for the edge the model <i>claims</i>. Half Kelly is what most pros use because models are usually overconfident. Betting more than 2x Kelly (like 75% every bet) loses money long-term even with a real edge.</li>
         <li><b>Live vs backtest</b>: live uses the real order book at the moment of the decision. The backtest replays past windows using recorded prices plus half a cent, and decides 10 minutes before each window starts. Trust live more.</li>
         <li>To try a new idea, edit <code>model.js</code> in the repo. The next run picks it up automatically.</li>
+        <li><b>Evolution</b>: models are recipes (which signals to watch, how much to trust the market, when to bet). Each generation the best 10% survive unchanged, and the rest are replaced by mixed and mutated copies of winners. It trains on older weeks and is graded on the newest week, which it never saw.</li>
+        <li><b>Arena</b>: evolved champions trade live with their own $1,000. Live results are the only test a model can't overfit.</li>
       </ul>
     </details>
   </div>
@@ -92,6 +124,7 @@ const REPO = 'jamesnark/btc-paper-trader';
 const SOURCES = {
   live: () => `https://raw.githubusercontent.com/${REPO}/data/state.json?t=${Date.now()}`,
   backtest: () => `https://raw.githubusercontent.com/${REPO}/data/backtest.json?t=${Date.now()}`,
+  evolution: () => `https://raw.githubusercontent.com/${REPO}/data/evolution.json?t=${Date.now()}`,
 };
 const SIZERS = {
   fixed2:    { label: 'Fixed 2%',      color: '#2e7d32' },
@@ -117,7 +150,7 @@ async function load() {
     const res = await fetch(SOURCES[mode](), { cache: 'no-store' });
     if (!res.ok) throw new Error(res.status === 404 ? 'No data yet. The first run hasn\'t finished.' : 'HTTP ' + res.status);
     lastState = await res.json();
-    render(lastState);
+    if (mode === 'evolution') renderEvo(lastState); else render(lastState);
   } catch (e) {
     $('status').innerHTML = `<span class="err">Couldn't load ${mode} data: ${e.message}</span>`;
   }
@@ -188,6 +221,7 @@ function render(s) {
   $('banks').innerHTML = b;
   $('legend').innerHTML = Object.values(SIZERS).map(z => `<span><i style="background:${z.color}"></i>${z.label}</span>`).join('');
   drawChart(eq);
+  renderArena(s);
 
   // Recent rounds
   let r = `<tr><th>Window</th><th class="num">Model: Up?</th><th class="num">Up price</th><th>Call</th><th>Bet</th><th>Result</th><th class="num">$10 bet</th></tr>`;
@@ -205,41 +239,117 @@ function render(s) {
   $('rounds').innerHTML = r;
 }
 
-function drawChart(eq) {
-  const c = $('chart'), dpr = window.devicePixelRatio || 1;
+function drawLines(id, pts, series, opts = {}) {
+  const c = $(id), dpr = window.devicePixelRatio || 1;
   const W = c.clientWidth, H = c.clientHeight;
   c.width = W * dpr; c.height = H * dpr;
   const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
-  if (eq.length < 2) { g.fillStyle = '#667085'; g.font = '14px sans-serif'; g.fillText('Not enough data yet. Check back after a few windows.', 12, 30); return; }
+  if (pts.length < 2) { g.fillStyle = '#667085'; g.font = '14px sans-serif'; g.fillText('Not enough data yet. Check back after a few windows.', 12, 30); return; }
   const L = 64, R = 12, T = 10, B = 26;
-  const t0 = eq[0].t, t1 = eq.at(-1).t || t0 + 1;
-  const ymax = Math.max(1000, ...eq.flatMap(p => Object.keys(SIZERS).map(k => p[k]))) * 1.05;
-  const X = t => L + (W - L - R) * ((t - t0) / Math.max(1, t1 - t0));
-  const Y = v => T + (H - T - B) * (1 - v / ymax);
+  const xs = pts.map(opts.x || (p => p.t)), x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const vals = pts.flatMap(p => series.map(z => p[z.key])).filter(v => v != null && isFinite(v));
+  const base = opts.baseline ?? null;
+  let ymin = Math.min(...vals, base ?? Infinity, opts.floor ?? Infinity), ymax = Math.max(...vals, base ?? -Infinity);
+  if (opts.floor === 0) ymin = 0;
+  const pad = (ymax - ymin) * 0.08 || 1; ymax += pad; if (opts.floor !== 0) ymin -= pad;
+  const X = v => L + (W - L - R) * ((v - x0) / Math.max(1e-9, x1 - x0));
+  const Y = v => T + (H - T - B) * (1 - (v - ymin) / (ymax - ymin));
   g.font = '12px sans-serif'; g.fillStyle = '#667085'; g.strokeStyle = '#e4e7ec'; g.lineWidth = 1;
-  const step = ymax > 4000 ? 1000 : ymax > 2000 ? 500 : 250;
-  for (let v = 0; v <= ymax; v += step) {
+  const raw = (ymax - ymin) / 5, mag = Math.pow(10, Math.floor(Math.log10(raw))), step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(st => st >= raw);
+  for (let v = Math.ceil(ymin / step) * step; v <= ymax; v += step) {
     g.beginPath(); g.moveTo(L, Y(v)); g.lineTo(W - R, Y(v)); g.stroke();
-    g.fillText('$' + v.toLocaleString(), 6, Y(v) + 4);
+    g.fillText((opts.fmt || (v => '$' + Math.round(v).toLocaleString()))(v), 6, Y(v) + 4);
   }
-  g.setLineDash([4, 4]); g.strokeStyle = '#98a2b3';
-  g.beginPath(); g.moveTo(L, Y(1000)); g.lineTo(W - R, Y(1000)); g.stroke(); g.setLineDash([]);
+  if (base != null) { g.setLineDash([4, 4]); g.strokeStyle = '#98a2b3'; g.beginPath(); g.moveTo(L, Y(base)); g.lineTo(W - R, Y(base)); g.stroke(); g.setLineDash([]); }
   g.fillStyle = '#667085';
-  g.fillText(tm(t0), L, H - 6);
-  const endLabel = tm(t1); g.fillText(endLabel, W - R - g.measureText(endLabel).width, H - 6);
-  for (const [k, z] of Object.entries(SIZERS)) {
-    g.strokeStyle = z.color; g.lineWidth = 2; g.beginPath();
-    eq.forEach((p, i) => i ? g.lineTo(X(p.t), Y(p[k])) : g.moveTo(X(p.t), Y(p[k])));
-    g.stroke();
+  const lx0 = opts.xfmt ? opts.xfmt(x0) : tm(x0), lx1 = opts.xfmt ? opts.xfmt(x1) : tm(x1);
+  g.fillText(lx0, L, H - 6); g.fillText(lx1, W - R - g.measureText(lx1).width, H - 6);
+  for (const z of series) {
+    g.strokeStyle = z.color; g.lineWidth = 2; g.setLineDash(z.dash ? [6, 4] : []); g.beginPath();
+    let started = false;
+    pts.forEach((p, i) => { const v = p[z.key]; if (v == null) return; const x = X(xs[i]), y = Y(v); started ? g.lineTo(x, y) : g.moveTo(x, y); started = true; });
+    g.stroke(); g.setLineDash([]);
   }
+}
+const SIZER_SERIES = Object.entries(SIZERS).map(([key, z]) => ({ key, ...z }));
+const drawChart = eq => drawLines('chart', eq, SIZER_SERIES, { baseline: 1000, floor: 0 });
+const ARENA_COLORS = ['#1565c0', '#2e7d32', '#8e24aa', '#d84315', '#00838f', '#6d4c41', '#c2185b'];
+
+function renderArena(s) {
+  const A = s.arena, card = $('arenaCard');
+  if (s.mode !== 'live' || !A?.members?.length) { card.hidden = true; return; }
+  card.hidden = false;
+  const series = A.members.map((m, i) => ({ key: m.id, label: m.name, color: ARENA_COLORS[i % ARENA_COLORS.length] }));
+  const pts = [{ t: A.members.reduce((a, m) => Math.min(a, m.born), Infinity), ...Object.fromEntries(A.members.map(m => [m.id, 1000])) }, ...(A.equity || [])];
+  drawLines('arenaChart', pts, series, { baseline: 1000 });
+  $('arenaLegend').innerHTML = series.map(z => `<span><i style="background:${z.color}"></i>${z.label}</span>`).join('');
+  const pend = id => s.rounds.filter(r => !r.outcome && r.arena?.[id]?.cost).reduce((a, r) => a + r.arena[id].cost, 0);
+  const ranked = A.members.map(m => {
+    const eq = m.cash + pend(m.id);
+    const mine = s.rounds.filter(r => r.outcome && r.outcome !== 'void' && r.arena?.[m.id]?.cost);
+    const claimed = mine.length ? mine.reduce((a, r) => { const x = r.arena[m.id]; return a + (x.side === 'Up' ? x.p : 1 - x.p); }, 0) / mine.length : null;
+    return { m, eq, claimed };
+  }).sort((a, b) => b.eq - a.eq);
+  let h = `<tr><th>#</th><th>Champion</th><th>Test week at birth</th><th class="num">Live bets</th><th class="num">Won</th><th class="num">Claimed confidence</th><th class="num">Bankroll</th><th>Status</th></tr>`;
+  ranked.forEach(({ m, eq, claimed }, i) => {
+    const color = series.find(z => z.key === m.id).color;
+    const wr = m.bets ? m.wins / m.bets : null;
+    const status = eq < 3 ? '<span class="pill loss">Broke</span>' : m.bets < 50 ? `<span class="pill pend">Safe until 50 bets</span>` : (i === ranked.length - 1 ? '<span class="pill loss">On the chopping block</span>' : '<span class="pill win">Alive</span>');
+    h += `<tr><td>${i + 1}</td><td style="white-space:normal;min-width:260px"><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${color};margin-right:6px"></i><b>${m.name}</b><div class="mute" style="font-size:12px">${m.desc}</div></td>
+      <td>${pct(m.testAtBirth.winRate)} won, ${signed(m.testAtBirth.roi * 100).replace('$', '')}¢ per $1<div class="mute" style="font-size:12px">${m.testVerdict}</div></td>
+      <td class="num">${m.bets}</td><td class="num">${wr == null ? 'n/a' : pct(wr) + ` <span class="mute">±${pct(margin(wr, m.bets))}</span>`}</td>
+      <td class="num">${claimed == null ? 'n/a' : pct(claimed)}</td>
+      <td class="num ${cls(eq - 1000)}">${money(eq)}</td><td>${status}</td></tr>`;
+  });
+  if (A.retired?.length) h += A.retired.map(m => `<tr class="mute"><td>✝</td><td>${m.name}</td><td colspan="4">Eliminated ${tm(m.retiredAt)} after ${m.bets} bets</td><td class="num">${money(m.finalEquity)}</td><td><span class="pill loss">Eliminated</span></td></tr>`).join('');
+  $('arenaTable').innerHTML = h;
+  $('arenaLog').innerHTML = (A.log || []).slice(0, 6).map(e => `${tm(e.t)}: ${e.m}`).join('<br>') +
+    `<br>"Claimed confidence" is how sure the model said it was on its bets. If it says 65% but wins 55%, it's overconfident and bets too big.`;
+}
+
+function renderEvo(e) {
+  const d = t => new Date(t * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' });
+  const r100 = x => (x.roi * 100);
+  const sv = e.tribes.filter(t => t.verdict === 'survived').length, pr = e.tribes.filter(t => t.verdict === 'promising').length;
+  $('status').innerHTML = `<b>Last evolution run:</b> ${tm(e.createdAt)} (${e.seconds}s). ${e.tribes.length} tribes × ${e.params.POP} models × ${e.params.GENS} generations. Re-runs weekly on fresh data.`;
+  $('evoVerdict').innerHTML = `<h2>${sv} of ${e.tribes.length} tribes survived the test week${pr ? `, ${pr} more look promising` : ''}</h2>
+    <p style="margin:0">Trained on <b>${d(e.split.trainFrom)} to ${d(e.split.trainTo)}</b> (${e.split.trainN.toLocaleString()} windows). Tested on the sealed week of <b>${d(e.split.testFrom)} to ${d(e.split.testTo)}</b> (${e.split.testN} windows), which evolution never saw.
+    Average test-week profit: <b class="${cls(e.summary.testRoiMean)}">${e.summary.testRoiMean.toFixed(1)}¢ per $1 bet</b> (training said ${e.summary.trainRoiMean.toFixed(1)}¢; the drop is the overfitting gap).
+    For reference, on the test week "always pick Up" made ${money(e.reference.test.alwaysUp.pnl)} and "follow the favorite" made ${money(e.reference.test.favorite.pnl)} on 672 flat $10 bets.</p>`;
+  const avg = (gen, k, arr) => { const v = arr.map(t => t.history[gen]?.[k]).filter(x => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+  const pts = e.tribes[0].history.map((_, gen) => ({ gen, train: avg(gen, 'train', e.tribes), test: avg(gen, 'test', e.tribes), nullTrain: avg(gen, 'train', e.nulls) }));
+  const series = [
+    { key: 'train', label: 'Real tribes: training', color: '#1565c0' },
+    { key: 'test', label: 'Real tribes: sealed test week', color: '#2e7d32', dash: true },
+    { key: 'nullTrain', label: 'Scrambled-data tribes: training (pure overfitting)', color: '#d84315' },
+  ];
+  drawLines('evoChart', pts, series, { x: p => p.gen, baseline: 0, fmt: v => v.toFixed(0) + '¢', xfmt: g => 'gen ' + g });
+  $('evoLegend').innerHTML = series.map(z => `<span><i style="background:${z.color}"></i>${z.label}</span>`).join('');
+  const vp = v => ({ survived: 'win', promising: 'pend', 'luck-level': 'pend', 'failed the test week': 'loss', 'too few bets': 'pend' }[v] || 'pend');
+  let h = `<tr><th>Tribe</th><th>What it learned</th><th class="num">Training</th><th class="num">Test week</th><th class="num">Luck 95%</th><th class="num">p</th><th>Verdict</th></tr>`;
+  for (const t of e.tribes) {
+    h += `<tr><td>${t.tribe}</td><td style="white-space:normal;min-width:280px;font-size:13px">${t.desc}</td>
+      <td class="num">${pct(t.train.winRate)} won<br><span class="mute">${r100(t.train).toFixed(1)}¢/$1, ${t.train.bets} bets</span></td>
+      <td class="num"><b>${pct(t.test.winRate)} won</b><br><span class="${cls(t.test.roi)}">${r100(t.test).toFixed(1)}¢/$1</span><span class="mute">, ${t.test.bets} bets</span></td>
+      <td class="num">${t.perm ? t.perm.luck95.toFixed(1) + '¢' : 'n/a'}</td><td class="num">${t.perm ? t.perm.p : 'n/a'}</td>
+      <td><span class="pill ${vp(t.verdict)}">${t.verdict}</span></td></tr>`;
+  }
+  $('evoTable').innerHTML = h;
+  $('evoNull').innerHTML = `<h2>The scrambled-data check</h2>
+    <p style="margin:0">${e.nulls.length} extra tribes evolved on training data where the Up/Down results were randomly shuffled, so no real pattern existed. They still "won" ${pct(Math.max(...e.nulls.map(n => n.train.winRate)))} at best in training, averaging <b>${e.luck.trainMean.toFixed(1)}¢ profit per $1</b>.
+    That's how much evolution can fool you on data it trains on. Training scores mean nothing by themselves; only the sealed test week and live results count.</p>`;
 }
 
 document.querySelectorAll('.tabs button').forEach(btn => btn.onclick = () => {
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b === btn));
-  mode = btn.dataset.mode; $('status').textContent = 'Loading...'; $('next').innerHTML = ''; load();
+  mode = btn.dataset.mode; $('status').textContent = 'Loading...'; $('next').innerHTML = '';
+  $('traderView').hidden = mode === 'evolution'; $('evoView').hidden = mode !== 'evolution';
+  history.replaceState(null, '', mode === 'live' ? location.pathname : '#' + mode);
+  load();
 });
-window.addEventListener('resize', () => lastState && drawChart(lastState.equity || []));
-if (location.hash === '#backtest') document.querySelector('[data-mode=backtest]').click(); else load();
+window.addEventListener('resize', () => { if (!lastState) return; if (mode === 'evolution') renderEvo(lastState); else render(lastState); });
+const startTab = document.querySelector(`[data-mode="${location.hash.slice(1)}"]`);
+if (startTab) startTab.click(); else load();
 setInterval(() => { if (mode === 'live') load(); }, 60000);
 </script>
 </body>

@@ -4,7 +4,10 @@
 //      against the REAL live order book (real prices, real fees, no real money).
 // Usage: node run.mjs path/to/state.json
 import fs from 'node:fs';
+import path from 'node:path';
 import { predictUp, MODEL_NAME } from './model.js';
+import { computeFeatures } from './features.js';
+import { syncArena, arenaBets, arenaSettle } from './arena.js';
 import {
   WINDOW, getMarket, winnerOf, getBook, fillFromBook, getCandles, decide,
   newState, placeBets, settle, snapshotEquity,
@@ -19,12 +22,18 @@ state.model = MODEL_NAME;
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const errors = [];
 
+// 0. Arena: bring in new champions / eliminate the weakest when a new evolution run lands
+try {
+  const evoPath = path.join(path.dirname(file), 'evolution.json');
+  if (fs.existsSync(evoPath)) for (const m of syncArena(state, JSON.parse(fs.readFileSync(evoPath, 'utf8')), now)) log('arena', m);
+} catch (e) { errors.push(`arena sync: ${e.message}`); }
+
 // 1. Grade finished rounds
 for (const r of state.rounds.filter(r => !r.outcome && now >= r.end)) {
   try {
     const w = winnerOf(await getMarket(r.start));
-    if (w) { settle(state, r, w, now); log('graded', r.slug, '->', w); }
-    else if (now > r.end + 6 * 3600) { settle(state, r, 'void', now); log('voided (no result after 6h)', r.slug); }
+    if (w) { settle(state, r, w, now); arenaSettle(state, r, w, now); log('graded', r.slug, '->', w); }
+    else if (now > r.end + 6 * 3600) { settle(state, r, 'void', now); arenaSettle(state, r, 'void', now); log('voided (no result after 6h)', r.slug); }
     else log('waiting for result', r.slug);
   } catch (e) { errors.push(`grade ${r.slug}: ${e.message}`); }
 }
@@ -36,7 +45,7 @@ if (!state.rounds.some(r => r.start === next)) {
     const mkt = await getMarket(next);
     if (!mkt) throw new Error('market not listed yet');
     const [upBook, downBook] = await Promise.all(mkt.tokens.map(getBook));
-    const candles = await getCandles(now, 120);
+    const [candles, ethCandles] = await Promise.all([getCandles(now, 300), getCandles(now, 300, 'ETH-USD')]);
     const pUp = predictUp(candles);
     const upMid = upBook.bestBid != null && upBook.bestAsk != null ? (upBook.bestBid + upBook.bestAsk) / 2 : null;
     const { bet, best } = decide(pUp, upBook.bestAsk, downBook.bestAsk, mkt.feeRate);
@@ -51,8 +60,14 @@ if (!state.rounds.some(r => r.start === next)) {
       noBetReason: bet ? null : `best edge ${best ? (best.edge * 100).toFixed(1) + '¢' : 'n/a'} < 1¢ after fees`,
       outcome: null,
     };
-    placeBets(state, round, (side, dollars) =>
-      fillFromBook(side === 'Up' ? upBook.asks : downBook.asks, dollars, mkt.feeRate));
+    const fillFn = (side, dollars) => fillFromBook(side === 'Up' ? upBook.asks : downBook.asks, dollars, mkt.feeRate);
+    placeBets(state, round, fillFn);
+    // Arena: every evolved champion makes its own call on the same window
+    if (state.arena?.members?.length && upMid != null) {
+      const f = computeFeatures(candles.map(c => c.close), candles.map(c => c.volume), ethCandles.map(c => c.close), mkt.start);
+      if (f) arenaBets(state, round, f, fillFn);
+      else errors.push('arena: not enough candles for features');
+    }
     state.rounds.push(round);
     snapshotEquity(state, now);
     log('predicted', round.slug, `P(up)=${round.pUp}`, round.bet ? `BET ${round.bet.side} @ ${round.bet.ask}` : `no bet (${round.noBetReason})`);
