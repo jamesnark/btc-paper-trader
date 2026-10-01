@@ -2,7 +2,7 @@ name: Paper trader tick
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # every 5 min (GitHub may run it a few minutes late; that's fine)
+    - cron: '*/5 * * * *'   # every 5 min (GitHub often runs it late; that's fine)
   workflow_dispatch:        # lets you press "Run workflow" by hand
 
 permissions:
@@ -15,31 +15,36 @@ concurrency:
 jobs:
   tick:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
-      - name: Load saved state from the data branch
+      - name: Load saved files from the data branch
         run: |
           node -v
           mkdir -p out
           if git fetch -q --depth=1 origin data; then
-            git show FETCH_HEAD:state.json > out/state.json 2>/dev/null || rm -f out/state.json
-            git show FETCH_HEAD:backtest.json > out/backtest.json 2>/dev/null || rm -f out/backtest.json
+            git archive FETCH_HEAD | tar -x -C out
           fi
+          ls -la out
 
-      - name: Grade finished windows + predict the next one
+      - name: Grade finished windows + predict the next one (main model + arena)
         run: node run.mjs out/state.json
 
-      - name: Refresh backtest if model.js changed (or daily)
+      - name: Refresh 7-day backtest if model.js changed (or daily)
         continue-on-error: true
         run: node maybe-backtest.mjs out/backtest.json
+
+      - name: Re-run evolution weekly (or when evolution code changes)
+        continue-on-error: true
+        run: node maybe-evolve.mjs out
 
       - name: Save to the data branch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd out
+          rm -f *.tmp
           git init -q -b data
           git config user.name "paper-trader-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
