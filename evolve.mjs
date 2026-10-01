@@ -28,8 +28,10 @@ const ds = loadDataset(dsPath);
 if (!ds) throw new Error('no dataset');
 const { t0, btcC, btcV, ethC, perpC, lastReal } = ds.candles;
 const tmp = [];
+// DROP_DAYS (robustness checks): pretend the data ends N days earlier.
+const cutoff = (ds.windows.at(-1)?.s ?? 0) - (+(process.env.DROP_DAYS || 0)) * 86400;
 for (const w of ds.windows) {
-  if (w.o == null || !w.h) continue;
+  if (w.o == null || !w.h || w.s > cutoff) continue;
   const lead = P.LEADS[Math.floor(w.s / 900) % P.LEADS.length]; // mix of 10, 7 and 4 minutes early
   const at = w.s - lead;
   if (at > (lastReal ?? Infinity) + 60) continue;
@@ -231,6 +233,8 @@ const oos = {
   baselines: { favorite: flatBase(i => MID[i] >= 0.5), alwaysUp: flatBase(() => true) },
 };
 log(`OOS: ${oos.bets} bets over ${oos.weeks} weeks, ${(oos.winRate * 100).toFixed(1)}% won, ${oos.roi}¢/$1, CI [${oos.ci}], p=${oos.p}, profitable weeks ${oos.profitableWeeks}/${oos.weeks}`);
+
+if (process.env.OOS_ONLY) { fs.writeFileSync(out, JSON.stringify({ verdict: oos.bets < 100 ? 'not enough bets' : (oos.p < 0.05 && oos.ci[0] > 0) ? 'edge held up' : oos.roi > 0 ? 'positive but unproven' : 'no edge after fees', oos: { ...oos, equity: undefined }, folds })); process.exit(0); }
 
 // ---------------- production model (trades live) ----------------
 const prod = buildModel(W, P.PROD, 7000, true);

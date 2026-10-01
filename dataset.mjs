@@ -107,7 +107,9 @@ const N = Math.floor((cEnd - cStart) / 60) + 1;
 const series = { btcC: new Float64Array(N).fill(NaN), btcV: new Float64Array(N), ethC: new Float64Array(N).fill(NaN), perpC: new Float64Array(N).fill(NaN) };
 if (ds.candles) { // carry over what we already have (up to the last real candle)
   const o = ds.candles, off = Math.round((o.t0 - cStart) / 60);
-  const realEnd = Math.round(((o.lastReal ?? o.t0) - o.t0) / 60);
+  // older files didn't record lastReal; fall back to the last window start they covered (minus an hour, to be safe)
+  const lastRealT = o.lastReal ?? ((ds.range?.lastStart ?? o.t0) - 3600);
+  const realEnd = Math.round((lastRealT - o.t0) / 60);
   for (const k of Object.keys(series)) if (o[k]) for (let i = 0; i <= Math.min(realEnd, o[k].length - 1); i++) { const j = i + off; if (j >= 0 && j < N) series[k][j] = o[k][i]; }
 }
 const idx = t => Math.round((t - cStart) / 60);

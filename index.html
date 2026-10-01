@@ -87,8 +87,14 @@
 
   <div id="evoView" hidden>
     <div class="card" id="evoVerdict"></div>
+    <div class="card" id="robCard" hidden>
+      <h2>Robustness: the same blind test, sliced differently</h2>
+      <p class="mute" style="margin-top:0">Each row re-runs the whole walk-forward as if the data ended a few days earlier, which shifts where every 4-week test block starts. The models and data are mostly the same, so the rows aren't independent, but a real edge shouldn't flip on a shift of a few days.</p>
+      <div class="scroll"><table id="robTable"></table></div>
+      <p id="robSummary" style="margin-bottom:0"></p>
+    </div>
     <div class="card">
-      <h2>Blind-test bankroll: $1,000, half-Kelly, every out-of-sample bet</h2>
+      <h2>Blind-test bankroll: $1,000, half-Kelly, every out-of-sample bet (main run)</h2>
       <p class="mute" style="margin-top:0">Every bet on this line was made by a model that had never seen that week. Each 4-week block was traded by a model built only from data before it.</p>
       <canvas id="oosChart"></canvas>
     </div>
@@ -336,7 +342,8 @@ function renderEvo(e) {
   const dy = t => new Date(t * 1000).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
   const o = e.oos;
   $('status').innerHTML = `<b>Last evolution run:</b> ${tm(e.createdAt)} (${Math.round(e.seconds)}s). Data: ${e.data.rows.toLocaleString()} windows from ${dy(e.data.from)} to ${dy(e.data.to)}. Re-runs weekly.`;
-  const head = { 'edge held up': 'The edge held up in blind testing', 'positive but unproven': 'Profitable in blind testing, but not proven', 'no edge after fees': 'No edge after fees in blind testing', 'not enough bets': 'Not enough blind bets to judge' }[e.verdict];
+  const head = { 'edge held up': 'The edge held up in blind testing', 'positive but unproven': 'Profitable in blind testing, but not proven', 'mixed': 'Mixed: profitable in some blind tests, not others', 'no edge after fees': 'No edge after fees in blind testing', 'not enough bets': 'Not enough blind bets to judge' }[e.verdict];
+  const R = e.robustness;
   $('evoVerdict').innerHTML = `<h2>${head}</h2>
     <div class="grid" style="margin:10px 0 6px">
       <div class="kpi"><div class="l">Blind bets</div><div class="v">${o.bets.toLocaleString()}</div><div class="n">over ${o.weeks} weeks (${d(o.from)} to ${d(o.to)})</div></div>
@@ -349,6 +356,15 @@ function renderEvo(e) {
     Single champions averaged ${o.singles.roi.toFixed(1)}¢ on ${o.singles.bets.toLocaleString()} bets.</p>
     <p style="margin:8px 0 0"><b>Uncalibrated vote:</b> ${o.raw.bets.toLocaleString()} bets, ${pct(o.raw.winRate)} won, <b class="${cls(o.raw.roi)}">${o.raw.roi.toFixed(1)}¢ per $1</b> (95% range ${o.raw.ci[0].toFixed(1)}¢ to ${o.raw.ci[1].toFixed(1)}¢).
     It beat the calibrated vote here, but choosing it <i>because</i> it won the blind test would be overfitting the test. Both trade live in the arena, and live results decide.</p>`;
+  if (R) {
+    let rt = `<tr><th>Data ends</th><th class="num">Calibrated: bets</th><th class="num">Won</th><th class="num">¢ per $1</th><th class="num">95% range</th><th class="num">Uncalibrated: bets</th><th class="num">Won</th><th class="num">¢ per $1</th><th class="num">95% range</th></tr>`;
+    for (const r of R.runs) rt += `<tr><td>${r.shift ? r.shift + ' day' + (r.shift > 1 ? 's' : '') + ' earlier' : 'Latest (main run)'}</td>
+      <td class="num">${r.cal.bets}</td><td class="num">${r.cal.bets ? pct(r.cal.winRate) : 'n/a'}</td><td class="num ${cls(r.cal.roi)}"><b>${r.cal.roi.toFixed(1)}¢</b></td><td class="num ${r.cal.ci[0] > 0 ? 'up' : 'mute'}">${r.cal.ci[0].toFixed(1)} to ${r.cal.ci[1].toFixed(1)}</td>
+      <td class="num">${r.raw.bets}</td><td class="num">${pct(r.raw.winRate)}</td><td class="num ${cls(r.raw.roi)}"><b>${r.raw.roi.toFixed(1)}¢</b></td><td class="num ${r.raw.ci[0] > 0 ? 'up' : 'mute'}">${r.raw.ci[0].toFixed(1)} to ${r.raw.ci[1].toFixed(1)}</td></tr>`;
+    $('robTable').innerHTML = rt;
+    $('robSummary').innerHTML = `Calibrated vote: profitable in <b>${R.calProfitable} of ${R.runs.length}</b>, proven (95% range above zero) in <b>${R.calProven} of ${R.runs.length}</b>. Uncalibrated: profitable in ${R.rawProfitable}, proven in ${R.rawProven}. A real, solid edge should be profitable and proven in nearly all of them; the headline verdict requires that.`;
+    $('robCard').hidden = false;
+  } else $('robCard').hidden = true;
   drawLines('oosChart', o.equity, [{ key: 'kelly', color: '#1565c0' }], { baseline: 1000 });
   let f = `<tr><th>Test block</th><th class="num">Bets</th><th class="num">Won</th><th class="num">Ensemble ¢/$1</th><th class="num">95% range</th><th class="num">Uncalibrated</th><th class="num">Single champions</th><th class="num">k</th></tr>`;
   for (const x of e.folds) f += `<tr><td>${d(x.testFrom)} to ${d(x.testTo)}</td><td class="num">${x.ens.bets}</td><td class="num">${x.ens.bets ? pct(x.ens.winRate) : 'n/a'}</td>

@@ -25,7 +25,7 @@ export function saveDataset(path, ds) {
   const c = ds.candles;
   const packed = {
     ...ds,
-    candles: { t0: c.t0, n: c.btcC.length, ...Object.fromEntries(Object.keys(SCALES).map(k => [k, c[k] ? enc(c[k], SCALES[k]) : null])) },
+    candles: { t0: c.t0, lastReal: c.lastReal, n: c.btcC.length, ...Object.fromEntries(Object.keys(SCALES).map(k => [k, c[k] ? enc(c[k], SCALES[k]) : null])) },
   };
   fs.writeFileSync(path, zlib.gzipSync(JSON.stringify(packed), { level: 9 }));
 }
@@ -35,7 +35,7 @@ export function loadDataset(path) {
   const ds = JSON.parse(zlib.gunzipSync(fs.readFileSync(path)).toString());
   if (ds.version !== DS_VERSION) return null;
   const c = ds.candles;
-  if (c) ds.candles = { t0: c.t0, ...Object.fromEntries(Object.keys(SCALES).map(k => [k, c[k] ? dec(c[k], SCALES[k]) : null])) };
+  if (c) ds.candles = { t0: c.t0, lastReal: c.lastReal, ...Object.fromEntries(Object.keys(SCALES).map(k => [k, c[k] ? dec(c[k], SCALES[k]) : null])) };
   return ds;
 }
 
